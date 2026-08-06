@@ -395,3 +395,7 @@ class SyntheticPlasmaTimeDataset(Dataset):
             print("Observation noise relative to truth:")
             print(f"  mean: {np.mean(err):.6e}")
             print(f"  std:  {np.std(err):.6e}")
+
+
+from inr_radar.datasets.synthetic_generator import SyntheticPlasma4DDataset
+

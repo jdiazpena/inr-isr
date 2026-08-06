@@ -696,3 +696,6 @@ def read_amisr_h5_3d_altitude_band(
         print(f"  log10_Ne range:   {df['log10_Ne'].min():.6f} to {df['log10_Ne'].max():.6f}")
 
     return df
+
+
+read_amisr_hdf5_3d = read_amisr_h5_3d_altitude_band

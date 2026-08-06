@@ -48,6 +48,9 @@ Useful metadata columns:
 
 from __future__ import annotations
 
+from amisr_h5_reader_4d import read_amisr_h5_4d_volume, PFISRVolume4DDataset
+
+
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Iterable
@@ -696,3 +699,224 @@ def read_amisr_h5_3d_altitude_band(
         print(f"  log10_Ne range:   {df['log10_Ne'].min():.6f} to {df['log10_Ne'].max():.6f}")
 
     return df
+
+
+# Explicit alias for 3D compatibility
+read_amisr_hdf5_3d = read_amisr_h5_3d_altitude_band
+
+
+# ============================================================
+# 4D AMISR Reader across multiple altitude gates
+# ============================================================
+
+def read_amisr_hdf5_4d(
+    h5_path: str | Path,
+    z_min_km: float = 100.0,
+    z_max_km: float = 500.0,
+    time_start_utc: str | float | int | None = None,
+    time_end_utc: str | float | int | None = None,
+    record_stride: int = 1,
+    max_records: int | None = None,
+    window_start_index: int | None = None,
+    window_size_records: int | None = None,
+    min_ne: float = 0.0,
+    verbose: bool = True,
+) -> pd.DataFrame:
+    """
+    Read AMISR HDF5 across 4D continuous volume (x_km, y_km, z_km, t_sec) -> log10_Ne.
+    Ingests all altitude range gates within z_min_km <= z_km <= z_max_km.
+
+    Returns DataFrame containing:
+        [x_km, y_km, z_km, t_sec, log10_Ne, dNe, beam_index, beamcode]
+        along with additional metadata columns.
+    """
+    h5_path = Path(h5_path)
+
+    if not h5_path.exists():
+        raise FileNotFoundError(f"HDF5 file not found: {h5_path}")
+
+    rows = []
+
+    with h5py.File(h5_path, "r") as f:
+        if "FittedParams" not in f:
+            raise KeyError("HDF5 file is missing /FittedParams.")
+
+        required = [
+            "FittedParams/Ne",
+            "FittedParams/Range",
+            "FittedParams/Altitude",
+            "Time/UnixTime",
+        ]
+
+        for key in required:
+            if key not in f:
+                raise KeyError(f"HDF5 file is missing required dataset: {key}")
+
+        beamcode, az_deg, el_deg = _read_beamcodes(f)
+
+        ne_all = _as_array(f["FittedParams"]["Ne"]).astype(np.float64)
+
+        if ne_all.ndim != 3:
+            raise ValueError(
+                f"FittedParams/Ne must have shape [Ntime, Nbeams, Nranges], "
+                f"got {ne_all.shape}"
+            )
+
+        n_times, n_beams, n_ranges = ne_all.shape
+
+        if len(beamcode) != n_beams:
+            raise ValueError(
+                f"BeamCodes has {len(beamcode)} beams but Ne has {n_beams} beams."
+            )
+
+        if "dNe" in f["FittedParams"]:
+            dne_all = _as_array(f["FittedParams"]["dNe"]).astype(np.float64)
+
+            if dne_all.shape != ne_all.shape:
+                raise ValueError(
+                    f"FittedParams/dNe shape {dne_all.shape} does not match "
+                    f"Ne shape {ne_all.shape}."
+                )
+        else:
+            dne_all = None
+
+        range_km = _to_km(
+            _as_array(f["FittedParams"]["Range"]),
+            name="FittedParams/Range",
+        )
+
+        altitude_km = _to_km(
+            _as_array(f["FittedParams"]["Altitude"]),
+            name="FittedParams/Altitude",
+        )
+
+        range_km = _force_beam_range_shape(
+            range_km,
+            n_beams=n_beams,
+            n_ranges=n_ranges,
+            name="FittedParams/Range",
+        )
+
+        altitude_km = _force_beam_range_shape(
+            altitude_km,
+            n_beams=n_beams,
+            n_ranges=n_ranges,
+            name="FittedParams/Altitude",
+        )
+
+        unix_time = _as_array(f["Time"]["UnixTime"]).astype(np.float64)
+
+        time_indices = _select_time_indices(
+            unix_time=unix_time,
+            time_start_utc=time_start_utc,
+            time_end_utc=time_end_utc,
+            record_stride=record_stride,
+            max_records=max_records,
+            window_start_index=window_start_index,
+            window_size_records=window_size_records,
+        )
+
+        unix_mid_all = 0.5 * (unix_time[:, 0] + unix_time[:, 1])
+        t0 = float(unix_mid_all[time_indices[0]])
+
+        x_all, y_all, z_all = _compute_radar_xyz_from_range(
+            range_km=range_km,
+            az_deg=az_deg,
+            el_deg=el_deg,
+        )
+
+        if verbose:
+            print("AMISR H5 4D reader")
+            print(f"  h5_path:          {h5_path}")
+            print(f"  Ne shape:         {ne_all.shape}")
+            print(f"  selected times:   {len(time_indices)}")
+            print(f"  altitude range:   {z_min_km:.1f} to {z_max_km:.1f} km")
+
+        for time_idx in time_indices:
+            ne_t = ne_all[time_idx, :, :]
+            dne_t = dne_all[time_idx, :, :] if dne_all is not None else None
+
+            valid_mask = (
+                np.isfinite(ne_t)
+                & (ne_t > min_ne)
+                & (altitude_km >= float(z_min_km))
+                & (altitude_km <= float(z_max_km))
+            )
+
+            if not np.any(valid_mask):
+                continue
+
+            beam_idxs, range_idxs = np.where(valid_mask)
+            selected_ne = ne_t[valid_mask]
+            selected_dne = (
+                dne_t[valid_mask]
+                if dne_t is not None
+                else np.full(selected_ne.shape, np.nan, dtype=np.float64)
+            )
+
+            unix_start = float(unix_time[time_idx, 0])
+            unix_end = float(unix_time[time_idx, 1])
+            unix_mid = float(unix_mid_all[time_idx])
+            t_sec = unix_mid - t0
+
+            log10_ne = np.log10(selected_ne)
+
+            rel_dne = np.full(selected_ne.shape, np.nan, dtype=np.float64)
+            good_dne = np.isfinite(selected_dne) & (selected_ne > 0.0)
+            rel_dne[good_dne] = selected_dne[good_dne] / selected_ne[good_dne]
+
+            n = selected_ne.size
+
+            block = {
+                "time_index": np.full(n, int(time_idx), dtype=int),
+                "unix_start": np.full(n, unix_start, dtype=np.float64),
+                "unix_end": np.full(n, unix_end, dtype=np.float64),
+                "unix_mid": np.full(n, unix_mid, dtype=np.float64),
+                "t_sec": np.full(n, t_sec, dtype=np.float64),
+                "t_hours": np.full(n, t_sec / 3600.0, dtype=np.float64),
+
+                "beam_index": beam_idxs.astype(int),
+                "beamcode": beamcode[beam_idxs].astype(float),
+                "az_deg": az_deg[beam_idxs].astype(float),
+                "el_deg": el_deg[beam_idxs].astype(float),
+                "range_index": range_idxs.astype(int),
+
+                "range_km": range_km[beam_idxs, range_idxs],
+                "altitude_km": altitude_km[beam_idxs, range_idxs],
+                "x_km": x_all[beam_idxs, range_idxs],
+                "y_km": y_all[beam_idxs, range_idxs],
+                "z_km": z_all[beam_idxs, range_idxs],
+
+                "Ne": selected_ne.astype(np.float64),
+                "dNe": selected_dne.astype(np.float64),
+                "rel_dNe": rel_dne.astype(np.float64),
+                "log10_Ne": log10_ne.astype(np.float64),
+            }
+
+            rows.append(pd.DataFrame(block))
+
+    if len(rows) == 0:
+        raise ValueError("No valid AMISR samples were extracted for the requested 4D volume.")
+
+    df = pd.concat(rows, ignore_index=True)
+
+    df = df.replace([np.inf, -np.inf], np.nan)
+    df = df.dropna(subset=["x_km", "y_km", "z_km", "t_sec", "log10_Ne"]).copy()
+    df = df.sort_values(["time_index", "beam_index", "range_index"]).reset_index(drop=True)
+
+    if verbose:
+        print()
+        print("Extracted 4D dataframe:")
+        print(f"  rows:             {len(df)}")
+        print(f"  time records:     {df['time_index'].nunique()}")
+        print(f"  x range [km]:     {df['x_km'].min():.3f} to {df['x_km'].max():.3f}")
+        print(f"  y range [km]:     {df['y_km'].min():.3f} to {df['y_km'].max():.3f}")
+        print(f"  z range [km]:     {df['z_km'].min():.3f} to {df['z_km'].max():.3f}")
+    return df
+
+
+from amisr_h5_reader_3d import read_amisr_h5_3d_altitude_band
+from amisr_h5_reader_4d import read_amisr_h5_4d_volume
+
+read_amisr_hdf5_3d = read_amisr_h5_3d_altitude_band
+read_amisr_hdf5_4d = read_amisr_h5_4d_volume

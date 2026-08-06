@@ -446,3 +446,409 @@ class RadarTimeH5Dataset(Dataset):
                 f"{self.df['t_sec'].min():.3f} to "
                 f"{self.df['t_sec'].max():.3f}"
             )
+
+
+
+
+
+
+# ============================================================
+# 3D & 4D Normalizer classes and PyTorch Datasets
+# ============================================================
+
+class Normalizer3D:
+    """
+    3D Coordinate and Target Normalizer scaling (x_km, y_km, t_sec) to [-1, 1]^3.
+    """
+
+    def __init__(
+        self,
+        coord_cols: Sequence[str] = ("x_km", "y_km", "t_sec"),
+        target_col: str = "log10_Ne",
+    ):
+        self.coord_cols = tuple(coord_cols)
+        self.target_col = target_col
+        self.coord_scalers: dict[str, dict[str, float]] = {}
+        self.target_scaler: dict[str, float] = {}
+
+    def fit(
+        self,
+        coords: np.ndarray | pd.DataFrame,
+        values: np.ndarray | pd.Series | pd.DataFrame | None = None,
+    ) -> Normalizer3D:
+        if isinstance(coords, pd.DataFrame):
+            coords_arr = coords.loc[:, list(self.coord_cols)].to_numpy(dtype=np.float64)
+        else:
+            coords_arr = np.asarray(coords, dtype=np.float64)
+
+        if coords_arr.ndim != 2 or coords_arr.shape[1] != 3:
+            raise ValueError(f"Normalizer3D expects shape [N, 3], got {coords_arr.shape}")
+
+        for i, col in enumerate(self.coord_cols):
+            vmin = float(np.nanmin(coords_arr[:, i]))
+            vmax = float(np.nanmax(coords_arr[:, i]))
+            self.coord_scalers[col] = {"min": vmin, "max": vmax}
+
+        if values is not None:
+            if isinstance(values, (pd.DataFrame, pd.Series)):
+                vals_arr = values.to_numpy(dtype=np.float64)
+            else:
+                vals_arr = np.asarray(values, dtype=np.float64)
+            vmin_t = float(np.nanmin(vals_arr))
+            vmax_t = float(np.nanmax(vals_arr))
+            self.target_scaler = {"min": vmin_t, "max": vmax_t}
+
+        return self
+
+    def transform(self, coords: np.ndarray | pd.DataFrame) -> np.ndarray:
+        if isinstance(coords, pd.DataFrame):
+            coords_arr = coords.loc[:, list(self.coord_cols)].to_numpy(dtype=np.float64)
+        else:
+            coords_arr = np.asarray(coords, dtype=np.float64)
+
+        coords_norm = np.zeros_like(coords_arr, dtype=np.float64)
+        for i, col in enumerate(self.coord_cols):
+            scaler = self.coord_scalers[col]
+            coords_norm[:, i], _, _ = normalize_minus1_plus1(
+                coords_arr[:, i], vmin=scaler["min"], vmax=scaler["max"], name=col
+            )
+        return coords_norm
+
+    def inverse_transform(self, coords_norm: np.ndarray) -> np.ndarray:
+        coords_norm = np.asarray(coords_norm, dtype=np.float64)
+        coords_raw = np.zeros_like(coords_norm, dtype=np.float64)
+        for i, col in enumerate(self.coord_cols):
+            scaler = self.coord_scalers[col]
+            coords_raw[:, i] = denormalize_minus1_plus1(
+                coords_norm[:, i], vmin=scaler["min"], vmax=scaler["max"]
+            )
+        return coords_raw
+
+    def transform_target(self, values: np.ndarray) -> np.ndarray:
+        values = np.asarray(values, dtype=np.float64)
+        vals_norm, _, _ = normalize_minus1_plus1(
+            values, vmin=self.target_scaler["min"], vmax=self.target_scaler["max"], name=self.target_col
+        )
+        return vals_norm
+
+    def inverse_transform_target(self, values_norm: np.ndarray) -> np.ndarray:
+        values_norm = np.asarray(values_norm, dtype=np.float64)
+        return denormalize_minus1_plus1(
+            values_norm, vmin=self.target_scaler["min"], vmax=self.target_scaler["max"]
+        )
+
+
+class Normalizer4D:
+    """
+    4D Coordinate and Target Normalizer mapping (x_km, y_km, z_km, t_sec) <-> [-1, 1]^4.
+    """
+
+    def __init__(
+        self,
+        bounds: dict[str, tuple[float, float]] | None = None,
+        x_bounds: tuple[float, float] | None = None,
+        y_bounds: tuple[float, float] | None = None,
+        z_bounds: tuple[float, float] | None = None,
+        t_bounds: tuple[float, float] | None = None,
+        coord_cols: Sequence[str] = ("x_km", "y_km", "z_km", "t_sec"),
+        target_col: str = "log10_Ne",
+    ):
+        self.coord_cols = tuple(coord_cols)
+        self.target_col = target_col
+        self.bounds = {}
+        self.coord_scalers = {}
+        self.target_scaler = {}
+
+        if bounds is not None:
+            for k, v in bounds.items():
+                self.bounds[k] = (float(v[0]), float(v[1]))
+                self.coord_scalers[k] = {"min": float(v[0]), "max": float(v[1])}
+        if x_bounds is not None:
+            self.bounds["x_km"] = (float(x_bounds[0]), float(x_bounds[1]))
+            self.coord_scalers["x_km"] = {"min": float(x_bounds[0]), "max": float(x_bounds[1])}
+        if y_bounds is not None:
+            self.bounds["y_km"] = (float(y_bounds[0]), float(y_bounds[1]))
+            self.coord_scalers["y_km"] = {"min": float(y_bounds[0]), "max": float(y_bounds[1])}
+        if z_bounds is not None:
+            self.bounds["z_km"] = (float(z_bounds[0]), float(z_bounds[1]))
+            self.coord_scalers["z_km"] = {"min": float(z_bounds[0]), "max": float(z_bounds[1])}
+        if t_bounds is not None:
+            self.bounds["t_sec"] = (float(t_bounds[0]), float(t_bounds[1]))
+            self.coord_scalers["t_sec"] = {"min": float(t_bounds[0]), "max": float(t_bounds[1])}
+
+    def fit(
+        self,
+        coords: np.ndarray | pd.DataFrame | float | int | None = None,
+        y_km: np.ndarray | pd.Series | None = None,
+        z_km: np.ndarray | None = None,
+        t_sec: np.ndarray | None = None,
+        values: np.ndarray | pd.Series | pd.DataFrame | None = None,
+    ) -> Normalizer4D:
+        """Fit coordinate scalers from 4 coordinate arrays or matrix/dataframe."""
+        if y_km is not None and z_km is not None and t_sec is not None:
+            x_arr = np.asarray(coords, dtype=np.float64)
+            y_arr = np.asarray(y_km, dtype=np.float64)
+            z_arr = np.asarray(z_km, dtype=np.float64)
+            t_arr = np.asarray(t_sec, dtype=np.float64)
+
+            self.bounds["x_km"] = (float(np.nanmin(x_arr)), float(np.nanmax(x_arr)))
+            self.bounds["y_km"] = (float(np.nanmin(y_arr)), float(np.nanmax(y_arr)))
+            self.bounds["z_km"] = (float(np.nanmin(z_arr)), float(np.nanmax(z_arr)))
+            self.bounds["t_sec"] = (float(np.nanmin(t_arr)), float(np.nanmax(t_arr)))
+
+            for k in self.bounds:
+                self.coord_scalers[k] = {"min": self.bounds[k][0], "max": self.bounds[k][1]}
+
+            if values is not None:
+                vals_arr = np.asarray(values, dtype=np.float64)
+                self.target_scaler = {"min": float(np.nanmin(vals_arr)), "max": float(np.nanmax(vals_arr))}
+            return self
+
+        if isinstance(coords, pd.DataFrame):
+            coords_arr = coords.loc[:, list(self.coord_cols)].to_numpy(dtype=np.float64)
+        else:
+            coords_arr = np.asarray(coords, dtype=np.float64)
+
+        if coords_arr.ndim != 2 or coords_arr.shape[1] != 4:
+            raise ValueError(f"Normalizer4D expects shape [N, 4], got {coords_arr.shape}")
+
+        for i, col in enumerate(self.coord_cols):
+            vmin = float(np.nanmin(coords_arr[:, i]))
+            vmax = float(np.nanmax(coords_arr[:, i]))
+            self.coord_scalers[col] = {"min": vmin, "max": vmax}
+            self.bounds[col] = (vmin, vmax)
+
+        if values is not None:
+            if isinstance(values, (pd.DataFrame, pd.Series)):
+                vals_arr = values.to_numpy(dtype=np.float64)
+            else:
+                vals_arr = np.asarray(values, dtype=np.float64)
+            vmin_t = float(np.nanmin(vals_arr))
+            vmax_t = float(np.nanmax(vals_arr))
+            self.target_scaler = {"min": vmin_t, "max": vmax_t}
+
+        return self
+
+    def normalize(self, coords: np.ndarray | torch.Tensor | pd.DataFrame) -> np.ndarray | torch.Tensor:
+        is_torch = isinstance(coords, torch.Tensor)
+        if is_torch:
+            device = coords.device
+            dtype = coords.dtype
+            c_np = coords.detach().cpu().numpy()
+        elif isinstance(coords, pd.DataFrame):
+            c_np = coords.loc[:, list(self.coord_cols)].to_numpy(dtype=np.float64)
+        else:
+            c_np = np.asarray(coords, dtype=np.float64)
+
+        if c_np.shape[-1] != 4:
+            raise ValueError(f"Expected 4D coordinates with shape (..., 4), got shape {c_np.shape}")
+
+        out_np = np.zeros_like(c_np, dtype=np.float64)
+        for i, col in enumerate(self.coord_cols):
+            vmin, vmax = self.bounds.get(col, (self.coord_scalers[col]["min"], self.coord_scalers[col]["max"]))
+            span = vmax - vmin
+            if span <= 0:
+                out_np[..., i] = 0.0
+            else:
+                out_np[..., i] = 2.0 * (c_np[..., i] - vmin) / span - 1.0
+
+        if is_torch:
+            return torch.tensor(out_np, dtype=dtype, device=device)
+        return out_np
+
+    def denormalize(self, coords_norm: np.ndarray | torch.Tensor) -> np.ndarray | torch.Tensor:
+        is_torch = isinstance(coords_norm, torch.Tensor)
+        if is_torch:
+            device = coords_norm.device
+            dtype = coords_norm.dtype
+            cn_np = coords_norm.detach().cpu().numpy()
+        else:
+            cn_np = np.asarray(coords_norm, dtype=np.float64)
+
+        if cn_np.shape[-1] != 4:
+            raise ValueError(f"Expected 4D normalized coordinates with shape (..., 4), got shape {cn_np.shape}")
+
+        out_np = np.zeros_like(cn_np, dtype=np.float64)
+        for i, col in enumerate(self.coord_cols):
+            vmin, vmax = self.bounds.get(col, (self.coord_scalers[col]["min"], self.coord_scalers[col]["max"]))
+            span = vmax - vmin
+            out_np[..., i] = 0.5 * (cn_np[..., i] + 1.0) * span + vmin
+
+        if is_torch:
+            return torch.tensor(out_np, dtype=dtype, device=device)
+        return out_np
+
+    def forward(self, coords: np.ndarray | torch.Tensor) -> np.ndarray | torch.Tensor:
+        return self.normalize(coords)
+
+    def inverse(self, coords_norm: np.ndarray | torch.Tensor) -> np.ndarray | torch.Tensor:
+        return self.denormalize(coords_norm)
+
+    def transform(self, coords: np.ndarray | pd.DataFrame) -> np.ndarray:
+        return np.asarray(self.normalize(coords), dtype=np.float64)
+
+    def inverse_transform(self, coords_norm: np.ndarray) -> np.ndarray:
+        return np.asarray(self.denormalize(coords_norm), dtype=np.float64)
+
+    def transform_target(self, values: np.ndarray) -> np.ndarray:
+        values = np.asarray(values, dtype=np.float64)
+        vals_norm, _, _ = normalize_minus1_plus1(
+            values, vmin=self.target_scaler["min"], vmax=self.target_scaler["max"], name=self.target_col
+        )
+        return vals_norm
+
+    def inverse_transform_target(self, values_norm: np.ndarray) -> np.ndarray:
+        values_norm = np.asarray(values_norm, dtype=np.float64)
+        return denormalize_minus1_plus1(
+            values_norm, vmin=self.target_scaler["min"], vmax=self.target_scaler["max"]
+        )
+
+
+
+class IonosphereDataset(Dataset):
+    """
+    3D Ionosphere PyTorch Dataset wrapping (x_km, y_km, t_sec) -> log10_Ne.
+    """
+
+    def __init__(
+        self,
+        df_or_coords: pd.DataFrame | np.ndarray,
+        values: np.ndarray | None = None,
+        coord_cols: Sequence[str] = ("x_km", "y_km", "t_sec"),
+        target_col: str = "log10_Ne",
+        normalizer: Normalizer3D | None = None,
+    ):
+        super().__init__()
+        self.coord_cols = tuple(coord_cols)
+        self.target_col = target_col
+
+        if isinstance(df_or_coords, pd.DataFrame):
+            df = df_or_coords
+            coords_raw = df.loc[:, list(self.coord_cols)].to_numpy(dtype=np.float64)
+            values_raw = df.loc[:, [self.target_col]].to_numpy(dtype=np.float64)
+            self.df = df
+        else:
+            coords_raw = np.asarray(df_or_coords, dtype=np.float64)
+            if values is None:
+                raise ValueError("values must be provided when coords is an array.")
+            values_raw = np.asarray(values, dtype=np.float64)
+            if values_raw.ndim == 1:
+                values_raw = values_raw[:, None]
+            self.df = None
+
+        if normalizer is None:
+            self.normalizer = Normalizer3D(coord_cols=self.coord_cols, target_col=self.target_col)
+            self.normalizer.fit(coords_raw, values_raw)
+        else:
+            self.normalizer = normalizer
+
+        coords_norm = self.normalizer.transform(coords_raw)
+        values_norm = self.normalizer.transform_target(values_raw)
+
+        self.coords_raw = coords_raw
+        self.values_raw = values_raw
+        self.coords = torch.from_numpy(coords_norm.astype(np.float32))
+        self.values = torch.from_numpy(values_norm.astype(np.float32))
+
+    def __len__(self) -> int:
+        return self.coords.shape[0]
+
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
+        return {
+            "coords": self.coords[idx],
+            "values": self.values[idx],
+        }
+
+    @property
+    def n_samples(self) -> int:
+        return self.coords.shape[0]
+
+    @property
+    def in_features(self) -> int:
+        return 3
+
+    @property
+    def out_features(self) -> int:
+        return 1
+
+    def denormalize_coords(self, coords_norm: np.ndarray) -> np.ndarray:
+        return self.normalizer.inverse_transform(coords_norm)
+
+    def denormalize_target(self, values_norm: np.ndarray) -> np.ndarray:
+        return self.normalizer.inverse_transform_target(values_norm)
+
+
+AMISRDataset3D = IonosphereDataset
+
+
+class IonosphereDataset4D(Dataset):
+    """
+    4D Ionosphere PyTorch Dataset wrapping (x_km, y_km, z_km, t_sec) -> log10_Ne.
+    """
+
+    def __init__(
+        self,
+        df_or_coords: pd.DataFrame | np.ndarray,
+        values: np.ndarray | None = None,
+        coord_cols: Sequence[str] = ("x_km", "y_km", "z_km", "t_sec"),
+        target_col: str = "log10_Ne",
+        normalizer: Normalizer4D | None = None,
+    ):
+        super().__init__()
+        self.coord_cols = tuple(coord_cols)
+        self.target_col = target_col
+
+        if isinstance(df_or_coords, pd.DataFrame):
+            df = df_or_coords
+            coords_raw = df.loc[:, list(self.coord_cols)].to_numpy(dtype=np.float64)
+            values_raw = df.loc[:, [self.target_col]].to_numpy(dtype=np.float64)
+            self.df = df
+        else:
+            coords_raw = np.asarray(df_or_coords, dtype=np.float64)
+            if values is None:
+                raise ValueError("values must be provided when coords is an array.")
+            values_raw = np.asarray(values, dtype=np.float64)
+            if values_raw.ndim == 1:
+                values_raw = values_raw[:, None]
+            self.df = None
+
+        if normalizer is None:
+            self.normalizer = Normalizer4D(coord_cols=self.coord_cols, target_col=self.target_col)
+            self.normalizer.fit(coords_raw, values_raw)
+        else:
+            self.normalizer = normalizer
+
+        coords_norm = self.normalizer.transform(coords_raw)
+        values_norm = self.normalizer.transform_target(values_raw)
+
+        self.coords_raw = coords_raw
+        self.values_raw = values_raw
+        self.coords = torch.from_numpy(coords_norm.astype(np.float32))
+        self.values = torch.from_numpy(values_norm.astype(np.float32))
+
+    def __len__(self) -> int:
+        return self.coords.shape[0]
+
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
+        return {
+            "coords": self.coords[idx],
+            "values": self.values[idx],
+        }
+
+    @property
+    def n_samples(self) -> int:
+        return self.coords.shape[0]
+
+    @property
+    def in_features(self) -> int:
+        return 4
+
+    @property
+    def out_features(self) -> int:
+        return 1
+
+    def denormalize_coords(self, coords_norm: np.ndarray) -> np.ndarray:
+        return self.normalizer.inverse_transform(coords_norm)
+
+    def denormalize_target(self, values_norm: np.ndarray) -> np.ndarray:
+        return self.normalizer.inverse_transform_target(values_norm)

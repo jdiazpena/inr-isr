@@ -255,3 +255,33 @@ class MLPINR(nn.Module):
         """
 
         return self.net(coords)
+
+
+class SIREN4D(MLPINR):
+    """
+    Convenience wrapper for 4D Implicit Neural Representation SIREN model.
+    Maps continuous 4D space-time coordinates (x_norm, y_norm, z_norm, t_norm) to log10_Ne.
+    """
+
+    def __init__(
+        self,
+        in_features: int = 4,
+        out_features: int = 1,
+        hidden_features: int = 256,
+        hidden_layers: int = 3,
+        activation: ActivationName = "sine",
+        first_omega_0: float = 5.0,
+        hidden_omega_0: float = 5.0,
+        outermost_linear: bool = True,
+    ):
+        super().__init__(
+            in_features=in_features,
+            out_features=out_features,
+            hidden_features=hidden_features,
+            hidden_layers=hidden_layers,
+            activation=activation,
+            first_omega_0=first_omega_0,
+            hidden_omega_0=hidden_omega_0,
+            outermost_linear=outermost_linear,
+        )
+

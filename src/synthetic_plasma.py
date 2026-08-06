@@ -901,3 +901,12 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# Re-export 4D synthetic classes
+from inr_radar.datasets.synthetic_generator import (
+    MovingGaussianPatch4D,
+    evaluate_synthetic_plasma_4d,
+    SyntheticPlasma4DDataset,
+)
+

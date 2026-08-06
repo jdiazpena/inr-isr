@@ -455,6 +455,93 @@ def curvature_losses_xy_t(
     return curv_xy, curv_t
 
 
+def curvature_loss_4d(
+    model: torch.nn.Module,
+    coords_col: torch.Tensor,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """
+    Compute 4D spatial-temporal curvature loss using PyTorch autograd:
+        L_curvature = mean(f_xx^2 + f_yy^2 + f_zz^2 + f_tt^2)
+
+    coords_col: Tensor of shape (N, 4) with columns (x_norm, y_norm, z_norm, t_norm).
+    """
+    coords_col = coords_col.detach().clone().requires_grad_(True)
+    pred = model(coords_col)
+
+    grad = torch.autograd.grad(
+        outputs=pred,
+        inputs=coords_col,
+        grad_outputs=torch.ones_like(pred),
+        create_graph=True,
+        retain_graph=True,
+        only_inputs=True,
+    )[0]
+
+    fx = grad[:, 0:1]
+    fy = grad[:, 1:2]
+    fz = grad[:, 2:3]
+    ft = grad[:, 3:4]
+
+    grad_fx = torch.autograd.grad(
+        outputs=fx,
+        inputs=coords_col,
+        grad_outputs=torch.ones_like(fx),
+        create_graph=True,
+        retain_graph=True,
+        only_inputs=True,
+    )[0]
+
+    grad_fy = torch.autograd.grad(
+        outputs=fy,
+        inputs=coords_col,
+        grad_outputs=torch.ones_like(fy),
+        create_graph=True,
+        retain_graph=True,
+        only_inputs=True,
+    )[0]
+
+    grad_fz = torch.autograd.grad(
+        outputs=fz,
+        inputs=coords_col,
+        grad_outputs=torch.ones_like(fz),
+        create_graph=True,
+        retain_graph=True,
+        only_inputs=True,
+    )[0]
+
+    grad_ft = torch.autograd.grad(
+        outputs=ft,
+        inputs=coords_col,
+        grad_outputs=torch.ones_like(ft),
+        create_graph=True,
+        retain_graph=True,
+        only_inputs=True,
+    )[0]
+
+    fxx = grad_fx[:, 0:1]
+    fyy = grad_fy[:, 1:2]
+    fzz = grad_fz[:, 2:3]
+    ftt = grad_ft[:, 3:4]
+
+    curv_xx = torch.mean(fxx ** 2)
+    curv_yy = torch.mean(fyy ** 2)
+    curv_zz = torch.mean(fzz ** 2)
+    curv_tt = torch.mean(ftt ** 2)
+
+    l_curvature = curv_xx + curv_yy + curv_zz + curv_tt
+
+    details = {
+        "curv_xx": curv_xx,
+        "curv_yy": curv_yy,
+        "curv_zz": curv_zz,
+        "curv_tt": curv_tt,
+        "l_curvature": l_curvature,
+    }
+
+    return l_curvature, details
+
+
+
 def tensor_near_zero_stats(
     tensor: torch.Tensor | None,
     prefix: str,

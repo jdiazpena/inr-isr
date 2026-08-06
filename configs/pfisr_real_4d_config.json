@@ -1,0 +1,21 @@
+{
+  "h5_path": "data/20120122.001_lp_5min.h5",
+  "in_features": 4,
+  "out_features": 1,
+  "z_min_km": 100.0,
+  "z_max_km": 500.0,
+  "time_start_utc": null,
+  "time_end_utc": null,
+  "window_start_index": 0,
+  "window_size_records": 10,
+  "hidden_features": 256,
+  "hidden_layers": 3,
+  "activation": "sine",
+  "first_omega_0": 5.0,
+  "hidden_omega_0": 5.0,
+  "learning_rate": 0.0001,
+  "num_steps": 500,
+  "lambda_curvature": 1e-4,
+  "seed": 42,
+  "output_dir": "outputs/pfisr_real_4d_run"
+}

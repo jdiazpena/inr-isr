@@ -446,3 +446,17 @@ class RadarTimeH5Dataset(Dataset):
                 f"{self.df['t_sec'].min():.3f} to "
                 f"{self.df['t_sec'].max():.3f}"
             )
+
+
+from inr_radar.datasets.coordinate_transforms import Normalizer4D
+
+
+
+# Re-export 3D & 4D Normalizer classes and PyTorch Datasets
+from inr_radar.datasets.coordinate_transforms import (
+    Normalizer3D,
+    Normalizer4D,
+    IonosphereDataset,
+    AMISRDataset3D,
+    IonosphereDataset4D,
+)

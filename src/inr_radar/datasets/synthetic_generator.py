@@ -901,3 +901,206 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# ============================================================
+# 4D Synthetic Plasma Generator & Dataset
+# ============================================================
+
+import torch
+from torch.utils.data import Dataset
+
+try:
+    from .coordinate_transforms import Normalizer4D
+except ImportError:
+    from coordinate_transforms import Normalizer4D
+
+
+
+
+@dataclass
+class MovingGaussianPatch4D:
+    """
+    4D Moving Gaussian Patch in space-time (x, y, z, t).
+    """
+
+    name: str = "patch_4d_1"
+    amplitude_m3: float = 5.0e11
+    sigma_x_km: float = 50.0
+    sigma_y_km: float = 50.0
+    sigma_z_km: float = 30.0
+    x0_km: float = -100.0
+    y0_km: float = 0.0
+    z0_km: float = 300.0
+    vx_km_s: float = 0.7071
+    vy_km_s: float = 0.7071
+    vz_km_s: float = 0.0
+
+    def center(self, t_sec: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        t = np.asarray(t_sec, dtype=np.float64)
+        xc = self.x0_km + self.vx_km_s * t
+        yc = self.y0_km + self.vy_km_s * t
+        zc = self.z0_km + self.vz_km_s * t
+        return xc, yc, zc
+
+    def evaluate_delta(
+        self,
+        x_km: np.ndarray,
+        y_km: np.ndarray,
+        z_km: np.ndarray,
+        t_sec: np.ndarray,
+    ) -> np.ndarray:
+        x = np.asarray(x_km, dtype=np.float64)
+        y = np.asarray(y_km, dtype=np.float64)
+        z = np.asarray(z_km, dtype=np.float64)
+        t = np.asarray(t_sec, dtype=np.float64)
+
+        xc, yc, zc = self.center(t)
+        dx = x - xc
+        dy = y - yc
+        dz = z - zc
+
+        sx2 = self.sigma_x_km ** 2
+        sy2 = self.sigma_y_km ** 2
+        sz2 = self.sigma_z_km ** 2
+
+        exponent = -0.5 * ((dx ** 2) / sx2 + (dy ** 2) / sy2 + (dz ** 2) / sz2)
+        return self.amplitude_m3 * np.exp(exponent)
+
+
+def evaluate_synthetic_plasma_4d(
+    x_km: np.ndarray,
+    y_km: np.ndarray,
+    z_km: np.ndarray,
+    t_sec: np.ndarray,
+    background_ne_m3: float = 1.0e11,
+    patches: list[MovingGaussianPatch4D] | None = None,
+    min_ne_m3: float = 1.0,
+) -> dict[str, np.ndarray]:
+    """
+    Evaluate 4D synthetic plasma electron density Ne(x, y, z, t) and log10(Ne).
+    """
+    x = np.asarray(x_km, dtype=np.float64)
+    y = np.asarray(y_km, dtype=np.float64)
+    z = np.asarray(z_km, dtype=np.float64)
+    t = np.asarray(t_sec, dtype=np.float64)
+
+    shape = np.broadcast_shapes(x.shape, y.shape, z.shape, t.shape)
+    ne = np.full(shape, float(background_ne_m3), dtype=np.float64)
+
+    if patches is None:
+        patches = [MovingGaussianPatch4D()]
+
+    for patch in patches:
+        delta = patch.evaluate_delta(x, y, z, t)
+        ne += delta
+
+    ne = np.maximum(ne, float(min_ne_m3))
+    log10_ne = np.log10(ne)
+
+    return {
+        "x_km": np.broadcast_to(x, shape),
+        "y_km": np.broadcast_to(y, shape),
+        "z_km": np.broadcast_to(z, shape),
+        "t_sec": np.broadcast_to(t, shape),
+        "Ne": ne,
+        "log10_Ne": log10_ne,
+    }
+
+
+class SyntheticPlasma4DDataset(Dataset):
+    """
+    PyTorch Dataset for 4D synthetic plasma patch observations (x_km, y_km, z_km, t_sec).
+    """
+
+    def __init__(
+        self,
+        num_points: int = 5000,
+        x_bounds: tuple[float, float] = (-300.0, 300.0),
+        y_bounds: tuple[float, float] = (-300.0, 300.0),
+        z_bounds: tuple[float, float] = (100.0, 500.0),
+        t_bounds: tuple[float, float] = (0.0, 300.0),
+        v_km_s: float = 1.0,
+        background_ne_m3: float = 1.0e11,
+        patch_amplitude_m3: float = 5.0e11,
+        sigma_x_km: float = 50.0,
+        sigma_y_km: float = 50.0,
+        sigma_z_km: float = 30.0,
+        seed: int = 42,
+    ):
+        super().__init__()
+        rng = np.random.RandomState(seed)
+
+        x_km = rng.uniform(x_bounds[0], x_bounds[1], num_points)
+        y_km = rng.uniform(y_bounds[0], y_bounds[1], num_points)
+        z_km = rng.uniform(z_bounds[0], z_bounds[1], num_points)
+        t_sec = rng.uniform(t_bounds[0], t_bounds[1], num_points)
+
+        patch = MovingGaussianPatch4D(
+            amplitude_m3=patch_amplitude_m3,
+            sigma_x_km=sigma_x_km,
+            sigma_y_km=sigma_y_km,
+            sigma_z_km=sigma_z_km,
+            x0_km=0.5 * (x_bounds[0] + x_bounds[1]),
+            y0_km=0.5 * (y_bounds[0] + y_bounds[1]),
+            z0_km=0.5 * (z_bounds[0] + z_bounds[1]),
+            vx_km_s=v_km_s * 0.7071,
+            vy_km_s=v_km_s * 0.7071,
+            vz_km_s=0.0,
+        )
+
+        res = evaluate_synthetic_plasma_4d(
+            x_km=x_km,
+            y_km=y_km,
+            z_km=z_km,
+            t_sec=t_sec,
+            background_ne_m3=background_ne_m3,
+            patches=[patch],
+        )
+
+        self.df = pd.DataFrame(res)
+        self.normalizer = Normalizer4D(
+            x_bounds=x_bounds,
+            y_bounds=y_bounds,
+            z_bounds=z_bounds,
+            t_bounds=t_bounds,
+        )
+
+        coords_phys = self.df[["x_km", "y_km", "z_km", "t_sec"]].to_numpy(dtype=np.float32)
+        coords_norm = self.normalizer.normalize(coords_phys)
+
+        self.val_min = float(self.df["log10_Ne"].min())
+        self.val_max = float(self.df["log10_Ne"].max())
+        val_span = max(self.val_max - self.val_min, 1e-6)
+
+        values_norm = 2.0 * (self.df["log10_Ne"].to_numpy(dtype=np.float32) - self.val_min) / val_span - 1.0
+
+        self.coords = torch.from_numpy(coords_norm.astype(np.float32))
+        self.values = torch.from_numpy(values_norm.reshape(-1, 1).astype(np.float32))
+        self.raw_log10_ne = torch.from_numpy(self.df["log10_Ne"].to_numpy(dtype=np.float32).reshape(-1, 1))
+
+        self.coord_scalers = {
+            "x_km": {"min": x_bounds[0], "max": x_bounds[1]},
+            "y_km": {"min": y_bounds[0], "max": y_bounds[1]},
+            "z_km": {"min": z_bounds[0], "max": z_bounds[1]},
+            "t_sec": {"min": t_bounds[0], "max": t_bounds[1]},
+        }
+        self.target_scaler = {"min": self.val_min, "max": self.val_max}
+
+    def __len__(self) -> int:
+        return len(self.df)
+
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
+        if idx == 0:
+            return {"coords": self.coords, "values": self.values}
+        return {"coords": self.coords[idx : idx + 1], "values": self.values[idx : idx + 1]}
+
+    def denormalize_target(self, values_norm: np.ndarray) -> np.ndarray:
+        return 0.5 * (values_norm + 1.0) * (self.val_max - self.val_min) + self.val_min
+
+    def summary(self) -> None:
+        print("SyntheticPlasma4DDataset")
+        print(f"  n_samples:    {len(self.df)}")
+        print(f"  coords shape: {tuple(self.coords.shape)}")
+        print(f"  values shape: {tuple(self.values.shape)}")
+
