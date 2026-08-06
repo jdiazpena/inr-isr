@@ -1,0 +1,40 @@
+{
+  "output_dir": "outputs/synthetic_smoke_test",
+  "domain_size_km": 500.0,
+  "duration_sec": 3600.0,
+  "n_times": 31,
+  "background_ne_m3": 1000000000.0,
+  "patch_amplitude_m3": 1000000000000.0,
+  "patch_sigma_x_km": 45.0,
+  "patch_sigma_y_km": 45.0,
+  "motion": "left_right",
+  "speed_km_s": null,
+  "direction_deg": 0.0,
+  "integration_time_sec": 0.0,
+  "integration_samples": 41,
+  "sample_geometry": "sparse_grid",
+  "truth_grid_nx": 101,
+  "truth_grid_ny": 101,
+  "noise_std_log10": 0.0,
+  "seed": 0,
+  "patches": [
+    {
+      "name": "patch_1",
+      "amplitude_m3": 1000000000000.0,
+      "sigma_x_km": 45.0,
+      "sigma_y_km": 45.0,
+      "x0_km": -180.0,
+      "y0_km": 0.0,
+      "vx_km_s": 0.1,
+      "vy_km_s": 0.0
+    }
+  ],
+  "plot_time_indices": [
+    0,
+    15,
+    30
+  ],
+  "integration_window_convention": "centered_on_t_sec",
+  "observed_target": "linear_Ne_trapezoidal_average_then_log10",
+  "instantaneous_reference": "field_at_integration_midpoint"
+}

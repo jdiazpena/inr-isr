@@ -1,0 +1,42 @@
+{
+  "regularizations": {
+    "data_only": [],
+    "xy030_t030": [
+      "--reference_loss_weights",
+      "--target_xy_ratio",
+      "0.30",
+      "--target_t_ratio",
+      "0.30"
+    ]
+  },
+  "scopes": {
+    "pilot": {
+      "geometries": ["sparse_grid", "sparse_23"],
+      "speeds_km_s": [0.36, 2.0],
+      "integration_times_sec": [60, 600],
+      "seeds": [0],
+      "flow_reversal_seeds": [0]
+    },
+    "overnight_125": {
+      "geometries": ["sparse_grid", "sparse_23", "sparse_11"],
+      "speeds_km_s": [0.36, 2.0],
+      "integration_times_sec": [60, 120, 300],
+      "seeds": [0],
+      "flow_reversal_seeds": []
+    },
+    "core": {
+      "geometries": ["sparse_grid", "sparse_23", "sparse_11"],
+      "speeds_km_s": [0.36, 1.0, 2.0],
+      "integration_times_sec": [60, 120, 300, 600],
+      "seeds": [0, 1, 2],
+      "flow_reversal_seeds": [0, 1, 2]
+    }
+  },
+  "full_direction_extension": {
+    "geometry": "sparse_23",
+    "speeds_km_s": [0.36, 1.0, 2.0],
+    "integration_time_sec": 120,
+    "directions_deg": [45.0, 90.0],
+    "seeds": [0, 1, 2]
+  }
+}

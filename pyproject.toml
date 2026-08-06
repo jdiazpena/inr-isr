@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "inr-radar"
+version = "0.1.0"
+description = "Baseline Implicit Neural Field Codebase for ISR Plasma Field Reconstruction (UAI Postdoc Baseline)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Joaquín Mateo Díaz Peña", email = "joaquin.diaz@uai.cl"}
+]
+dependencies = [
+    "torch>=2.0.0",
+    "numpy>=1.22.0",
+    "scipy>=1.8.0",
+    "matplotlib>=3.5.0",
+    "pandas>=1.4.0",
+    "h5py>=3.6.0"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0"
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
