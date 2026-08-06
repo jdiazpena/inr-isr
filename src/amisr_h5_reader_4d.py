@@ -116,6 +116,12 @@ def read_amisr_h5_4d_volume(
             selected_ne = ne_t[b_idx, r_idx]
             selected_dne = dne_t[b_idx, r_idx]
             log10_ne = np.log10(selected_ne)
+            
+            # Compute measurement error in log10 space: d(log10 Ne) = (1 / ln 10) * (dNe / Ne)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                rel_dne = selected_dne / np.maximum(selected_ne, 1e-6)
+                dlog10_ne = 0.4342944819032518 * rel_dne
+                dlog10_ne = np.nan_to_num(dlog10_ne, nan=0.1, posinf=0.5, neginf=0.01)
 
             n = len(b_idx)
             block = {
@@ -135,6 +141,8 @@ def read_amisr_h5_4d_volume(
                 "z_km": z_all[b_idx, r_idx],
                 "Ne": selected_ne.astype(np.float64),
                 "dNe": selected_dne.astype(np.float64),
+                "rel_dNe": rel_dne.astype(np.float64),
+                "dlog10_Ne": dlog10_ne.astype(np.float64),
                 "log10_Ne": log10_ne.astype(np.float64),
             }
             rows.append(pd.DataFrame(block))
@@ -148,7 +156,10 @@ def read_amisr_h5_4d_volume(
     df = df.sort_values(["time_index", "beam_index", "range_index"]).reset_index(drop=True)
 
     if verbose:
+        mean_rel_err = float(np.nanmean(df["rel_dNe"])) * 100.0 if "rel_dNe" in df else 0.0
+        mean_log_err = float(np.nanmean(df["dlog10_Ne"])) if "dlog10_Ne" in df else 0.0
         print(f"Extracted 4D PFISR volume dataframe: {len(df)} rows across {df['time_index'].nunique()} times.")
+        print(f"  Raw AMISR Measurement Noise: Mean Rel Error = {mean_rel_err:.2f}%, Mean d(log10 Ne) = {mean_log_err:.4f} log units.")
 
     return df
 
@@ -156,6 +167,7 @@ def read_amisr_h5_4d_volume(
 class PFISRVolume4DDataset(Dataset):
     """
     PyTorch Dataset for real multi-altitude PFISR 4D volume training (x_km, y_km, z_km, t_sec) -> log10_Ne.
+    Includes measurement noise errors dlog10_Ne.
     """
 
     def __init__(
@@ -204,6 +216,7 @@ class PFISRVolume4DDataset(Dataset):
 
         self.coords = torch.from_numpy(coords_norm.astype(np.float32))
         self.values = torch.from_numpy(values_norm.reshape(-1, 1).astype(np.float32))
+        self.sigmas = torch.from_numpy(self.df["dlog10_Ne"].to_numpy(dtype=np.float32).reshape(-1, 1))
 
         self.coord_scalers = {
             "x_km": {"min": self.df["x_km"].min(), "max": self.df["x_km"].max()},
@@ -218,8 +231,13 @@ class PFISRVolume4DDataset(Dataset):
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
         if idx == 0:
-            return {"coords": self.coords, "values": self.values}
-        return {"coords": self.coords[idx : idx + 1], "values": self.values[idx : idx + 1]}
+            return {"coords": self.coords, "values": self.values, "sigmas": self.sigmas}
+        return {
+            "coords": self.coords[idx : idx + 1],
+            "values": self.values[idx : idx + 1],
+            "sigmas": self.sigmas[idx : idx + 1],
+        }
+
 
     def denormalize_target(self, values_norm: np.ndarray) -> np.ndarray:
         return 0.5 * (values_norm + 1.0) * (self.val_max - self.val_min) + self.val_min
