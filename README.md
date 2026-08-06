@@ -1,4 +1,4 @@
-# `inr-radar`: Baseline Implicit Neural Field Codebase for ISR Plasma Field Reconstruction
+# `inr-isr`: Baseline Implicit Neural Field Codebase for ISR Plasma Field Reconstruction
 
 **Applicant:** Joaquín Mateo Díaz Peña  
 **Institutional Pre-Submission Baseline Repository for ANID FONDECYT Postdoctorado 2027**  
@@ -9,7 +9,7 @@
 
 ## 1. Executive Summary & Purpose
 
-`inr-radar` is an open-source Python codebase containing the **verified baseline software developed during the applicant's UAI Postdoctoral fellowship**. It provides empirical proof of completed software capabilities prior to proposal submission, implementing Implicit Neural Representations (INRs)—specifically SIREN-style periodic activation networks—to reconstruct continuous 4D ionospheric plasma fields from sparse remote sensing observations.
+`inr-isr` is an open-source Python codebase containing the **verified baseline software developed during the applicant's UAI Postdoctoral fellowship**. It provides empirical proof of completed software capabilities prior to proposal submission, implementing Implicit Neural Representations (INRs)—specifically SIREN-style periodic activation networks—to reconstruct continuous 4D ionospheric plasma fields from sparse remote sensing observations.
 
 This repository serves as direct evidence for ANID FONDECYT Postdoctorado 2027 evaluators that the applicant has already implemented and validated:
 1. **Production-Grade Data Readers:** Ingesting real Madrigal HDF5 products from 48-beam AMISR phased-array radars (PFISR, Alaska and RISR-N, Resolute Bay).
@@ -65,8 +65,8 @@ The proposed 36-month FONDECYT fellowship will extend this proven software basel
 
 ```bash
 # Clone and install the baseline package
-git clone https://github.com/jdiazpena/inr-radar.git
-cd inr-radar
+git clone https://github.com/jdiazpena/inr-isr.git
+cd inr-isr
 pip install -e .
 
 # Run unit tests to verify installation
@@ -81,12 +81,12 @@ python3 benchmarks/run_synthetic_benchmark.py --config configs/synthetic_patch_c
 ## 6. Citation & Proposal Reference
 
 ```bibtex
-@misc{DiazPena2026INRRadarBaseline,
+@misc{DiazPena2026INRISRBaseline,
   author = {D{\'\i}az Pe{\~n}a, Joaqu{\'\i}n Mateo},
-  title = {inr-radar: Baseline Implicit Neural Field Codebase for ISR Field Reconstruction},
+  title = {inr-isr: Baseline Implicit Neural Field Codebase for ISR Field Reconstruction},
   year = {2026},
   publisher = {GitHub},
   journal = {GitHub repository},
-  howpublished = {\url{https://github.com/jdiazpena/inr-radar}}
+  howpublished = {\url{https://github.com/jdiazpena/inr-isr}}
 }
 ```
