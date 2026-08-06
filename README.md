@@ -12,7 +12,7 @@
 `inr-isr` is an open-source Python codebase containing the **verified baseline software developed during the applicant's UAI Postdoctoral fellowship**. It provides empirical proof of completed software capabilities prior to proposal submission, implementing Implicit Neural Representations (INRs)—specifically SIREN-style periodic activation networks—to reconstruct continuous 4D ionospheric plasma fields from sparse remote sensing observations.
 
 This repository serves as direct evidence for ANID FONDECYT Postdoctorado 2027 evaluators that the applicant has already implemented and validated:
-1. **Production-Grade Data Readers:** Ingesting real Madrigal HDF5 products from 48-beam AMISR phased-array radars (PFISR, Alaska and RISR-N, Resolute Bay).
+1. **Production-Grade Data Readers:** Ingesting native AMISR database HDF5 fit files from 48-beam AMISR phased-array radars (PFISR, Alaska and RISR-N, Resolute Bay) as well as auxiliary Madrigal HDF5 products.
 2. **Differentiable Coordinate Architectures:** 3-layer SIREN MLPs with exact PyTorch Automatic Differentiation (`torch.autograd`).
 3. **Synthetic OSSE Prototyping Engine:** Parameterized 3D/4D moving plasma patch generators for evaluating velocity convection (0.36 to 3.00 km/s) across sparse radar beam geometries (42, 23, and 11 beams) and integration times (1 to 10 min).
 4. **Automated Regularization Telemetry:** Horizontal Hessian curvature penalty loops ($\mathcal{L}_{xy} = f_{xx}^2 + 2f_{xy}^2 + f_{yy}^2$) and loss ratio diagnostic tracking.
@@ -25,8 +25,8 @@ This repository serves as direct evidence for ANID FONDECYT Postdoctorado 2027 e
 +-----------------------------------------------------------------------------------+
 |                  VERIFIED BASELINE RESULTS (36 EXPERIMENTAL RUNS)                 |
 +-----------------------------------------------------------------------------------+
-| 1. Real Radar Ingestion: Production-grade reading of PFISR/RISR Madrigal HDF5     |
-|    fit files (Ne, Te, Ti, v_los, measurement variances).                          |
+| 1. Real Radar Ingestion: Production-grade reading of PFISR/RISR native AMISR      |
+|    database HDF5 fit files (Ne, Te, Ti, v_los, measurement variances).            |
 | 2. Measured-Field Improvement: Hessian curvature regularization improves active-  |
 |    region RMSE across 100% of synthetic pilot test cases.                         |
 | 3. Motion Blur Mismatch: Demonstrated that fast convection (2.0 km/s) over 10-min  |
