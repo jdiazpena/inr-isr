@@ -116,13 +116,13 @@ def test_4d_siren_model_forward_and_autograd_curvature():
     assert torch.all(torch.isfinite(pred))
 
     # 4D curvature loss (f_xx^2 + f_yy^2 + f_zz^2 + f_tt^2)
-    l_curv, details = curvature_loss_4d(model, collocation_coords)
+    l_curv, details = curvature_loss_4d(model, collocation_coords, loss_type="isotropic")
 
     assert isinstance(l_curv, torch.Tensor)
     assert torch.isfinite(l_curv)
     assert l_curv.item() >= 0.0
 
-    for key in ["curv_xx", "curv_yy", "curv_zz", "curv_tt"]:
+    for key in ["curv_xx", "curv_yy", "curv_zz_quadratic", "curv_tt"]:
         assert key in details
         assert torch.isfinite(details[key])
         assert details[key].item() >= 0.0
@@ -136,6 +136,51 @@ def test_4d_siren_model_forward_and_autograd_curvature():
         assert param.grad is not None, f"Gradient is None for {name}"
         assert torch.all(torch.isfinite(param.grad)), f"Gradient non-finite for {name}"
 
+
+def test_anisotropic_huber_curvature_loss_4d():
+    """Test 4D anisotropic Huber curvature loss calculation and backwards compatibility."""
+    set_seed(42)
+    model = MLPINR(
+        in_features=4,
+        out_features=1,
+        hidden_features=64,
+        hidden_layers=2,
+        activation="sine",
+    )
+
+    collocation_coords = torch.randn(50, 4, dtype=torch.float32)
+
+    # 1. Isotropic loss (default)
+    l_curv_iso, details_iso = curvature_loss_4d(model, collocation_coords, loss_type="isotropic")
+    assert details_iso["loss_type"] == "isotropic"
+    assert torch.isfinite(l_curv_iso)
+
+    # 2. Anisotropic Huber loss
+    l_curv_aniso, details_aniso = curvature_loss_4d(
+        model=model,
+        coords_col=collocation_coords,
+        loss_type="anisotropic_huber",
+        lambda_xy=1.0,
+        lambda_z=0.1,
+        lambda_t=1.0,
+        huber_delta_z=0.1,
+    )
+    assert details_aniso["loss_type"] == "anisotropic_huber"
+    assert torch.isfinite(l_curv_aniso)
+    assert "curv_zz_huber" in details_aniso
+    assert "curv_xy_mixed" in details_aniso
+
+    # Test backprop on anisotropic loss
+    pred = model(collocation_coords)
+    target = torch.zeros(50, 1)
+    l_data = torch.nn.functional.mse_loss(pred, target)
+    l_total = l_data + l_curv_aniso
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    optimizer.zero_grad()
+    l_total.backward()
+    for name, param in model.named_parameters():
+        assert param.grad is not None, f"Gradient is None for {name}"
+        assert torch.all(torch.isfinite(param.grad)), f"Gradient non-finite for {name}"
 
 
 def test_synthetic_4d_training_step_sanity():
@@ -163,7 +208,12 @@ def test_synthetic_4d_training_step_sanity():
         optimizer.zero_grad()
         pred = model(coords)
         l_data = torch.nn.functional.mse_loss(pred, values)
-        l_curv, _ = curvature_loss_4d(model, coords)
+        l_curv, _ = curvature_loss_4d(
+            model=model,
+            coords_col=coords,
+            loss_type="anisotropic_huber",
+            lambda_z=0.1,
+        )
 
         l_total = l_data + lambda_curv * l_curv
         assert torch.isfinite(l_total), f"Step {step}: Loss is non-finite!"
@@ -176,3 +226,4 @@ def test_synthetic_4d_training_step_sanity():
     # Verify loss decreased from start to end
     assert losses[-1] < losses[0], f"Loss did not decrease: initial={losses[0]}, final={losses[-1]}"
     assert np.all(np.isfinite(losses))
+

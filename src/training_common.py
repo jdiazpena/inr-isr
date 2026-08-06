@@ -458,10 +458,21 @@ def curvature_losses_xy_t(
 def curvature_loss_4d(
     model: torch.nn.Module,
     coords_col: torch.Tensor,
+    loss_type: str = "isotropic",
+    lambda_xy: float = 1.0,
+    lambda_z: float = 1.0,
+    lambda_t: float = 1.0,
+    huber_delta_z: float = 0.1,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """
-    Compute 4D spatial-temporal curvature loss using PyTorch autograd:
-        L_curvature = mean(f_xx^2 + f_yy^2 + f_zz^2 + f_tt^2)
+    Compute 4D spatial-temporal curvature loss using PyTorch autograd.
+
+    Supports:
+      - loss_type="isotropic" (default): L_curvature = mean(f_xx^2 + f_yy^2 + f_zz^2 + f_tt^2)
+      - loss_type="anisotropic_huber": 
+          L_curvature = lambda_xy * mean(f_xx^2 + 2*f_xy^2 + f_yy^2) 
+                      + lambda_z  * mean(Huber_delta(f_zz)) 
+                      + lambda_t  * mean(f_tt^2)
 
     coords_col: Tensor of shape (N, 4) with columns (x_norm, y_norm, z_norm, t_norm).
     """
@@ -519,26 +530,50 @@ def curvature_loss_4d(
     )[0]
 
     fxx = grad_fx[:, 0:1]
+    fxy = grad_fx[:, 1:2]
     fyy = grad_fy[:, 1:2]
     fzz = grad_fz[:, 2:3]
     ftt = grad_ft[:, 3:4]
 
     curv_xx = torch.mean(fxx ** 2)
     curv_yy = torch.mean(fyy ** 2)
-    curv_zz = torch.mean(fzz ** 2)
+    curv_xy_mixed = torch.mean(fxy ** 2)
+    curv_zz_quadratic = torch.mean(fzz ** 2)
+    curv_zz_huber = torch.nn.functional.huber_loss(
+        fzz, torch.zeros_like(fzz), delta=huber_delta_z, reduction="mean"
+    )
     curv_tt = torch.mean(ftt ** 2)
 
-    l_curvature = curv_xx + curv_yy + curv_zz + curv_tt
+    if loss_type == "anisotropic_huber":
+        curv_xy = torch.mean(fxx ** 2 + 2.0 * fxy ** 2 + fyy ** 2)
+        curv_z = curv_zz_huber
+        curv_t = curv_tt
+
+        l_curvature = lambda_xy * curv_xy + lambda_z * curv_z + lambda_t * curv_t
+    else:
+        # Default isotropic behavior (backwards compatible)
+        curv_xy = curv_xx + curv_yy
+        curv_z = curv_zz_quadratic
+        curv_t = curv_tt
+
+        l_curvature = curv_xx + curv_yy + curv_zz_quadratic + curv_tt
 
     details = {
         "curv_xx": curv_xx,
         "curv_yy": curv_yy,
-        "curv_zz": curv_zz,
+        "curv_xy_mixed": curv_xy_mixed,
+        "curv_zz_quadratic": curv_zz_quadratic,
+        "curv_zz_huber": curv_zz_huber,
         "curv_tt": curv_tt,
+        "curv_xy": curv_xy,
+        "curv_z": curv_z,
+        "curv_t": curv_t,
         "l_curvature": l_curvature,
+        "loss_type": loss_type,
     }
 
     return l_curvature, details
+
 
 
 

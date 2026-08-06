@@ -33,6 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num_steps", type=int, default=None)
     parser.add_argument("--learning_rate", type=float, default=None)
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--loss_type", type=str, default=None, choices=["isotropic", "anisotropic_huber"])
     return parser.parse_args()
 
 
@@ -82,8 +83,14 @@ def run_synthetic_4d_training(config: dict) -> dict:
     lambda_curv = config.get("lambda_curvature", 1e-4)
     num_steps = config.get("num_steps", 500)
 
+    loss_type = config.get("loss_type", "isotropic")
+    lambda_xy = config.get("lambda_xy", 1.0)
+    lambda_z = config.get("lambda_z", 1.0)
+    lambda_t = config.get("lambda_t", 1.0)
+    huber_delta_z = config.get("huber_delta_z", 0.1)
+
     history = []
-    print(f"Starting 4D synthetic training for {num_steps} steps...")
+    print(f"Starting 4D synthetic training for {num_steps} steps (loss_type={loss_type})...")
 
     for step in range(1, num_steps + 1):
         model.train()
@@ -92,8 +99,16 @@ def run_synthetic_4d_training(config: dict) -> dict:
         pred = model(coords)
         l_data = F.mse_loss(pred, values)
 
-        # Autograd 4D spatial-temporal curvature loss (f_xx^2 + f_yy^2 + f_zz^2 + f_tt^2)
-        l_curv, curv_details = curvature_loss_4d(model, collocation_pool)
+        # Autograd 4D curvature loss (supports isotropic and anisotropic_huber)
+        l_curv, curv_details = curvature_loss_4d(
+            model=model,
+            coords_col=collocation_pool,
+            loss_type=loss_type,
+            lambda_xy=lambda_xy,
+            lambda_z=lambda_z,
+            lambda_t=lambda_t,
+            huber_delta_z=huber_delta_z,
+        )
 
         l_total = l_data + lambda_curv * l_curv
 
@@ -110,8 +125,10 @@ def run_synthetic_4d_training(config: dict) -> dict:
             "curv_loss": l_curv.item(),
             "curv_xx": curv_details["curv_xx"].item(),
             "curv_yy": curv_details["curv_yy"].item(),
-            "curv_zz": curv_details["curv_zz"].item(),
+            "curv_zz_quadratic": curv_details["curv_zz_quadratic"].item(),
+            "curv_zz_huber": curv_details["curv_zz_huber"].item(),
             "curv_tt": curv_details["curv_tt"].item(),
+            "loss_type": loss_type,
         }
         history.append(step_dict)
 
