@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "purpose": "long",
+  "output_root": "/home/jdiaz/postdoc/inr-isr-4d/outputs/studies/long",
+  "defaults": {
+    "repetition_seeds": [0, 1, 2],
+    "split": {"unit": "beam", "strategy": "random", "validation_group_count": 4, "calibration_group_count": 6, "test_group_count": 6, "seed": 0},
+    "training": {
+      "model": {"hidden_features": 256, "hidden_layers": 3},
+      "optimization": {"learning_rate": 0.0001, "num_steps": 10000, "data_batch_size": 8192, "seed": 0},
+      "collocation": {"mode": "sobol", "pool_size": 262144, "batch_size": 32768, "derivative_microbatch_size": 2048, "resample_every": 100, "seed": 0},
+      "derivative_prior": {"mode": "none", "weight": 0.0},
+      "runtime": {"device": "auto", "precision": "float32", "amp": false, "inference_chunk_size": 65536, "diagnostic_probe_size": 4096, "history_every": 50, "checkpoint_every": 500}
+    },
+    "conformal": {"alpha": 0.05, "bootstrap_repetitions": 1000}
+    ,"synthetic_truth": {"count": 100000, "seed_offset": 100000}
+  },
+  "cases": [
+    {
+      "name": "long instantaneous data only",
+      "question": "What independent reconstruction and coverage baseline is obtained from instantaneous observations without a derivative prior?",
+      "data": {"type": "synthetic", "field": {"variant": "gaussian_3d"}, "observation": {"mode": "instantaneous", "integration_duration_sec": 0.0, "integration_samples": 1, "n_beams": 42, "n_ranges": 18, "n_times": 24, "duration_sec": 3600.0, "seed": 0}}
+    },
+    {
+      "name": "long 120 second data only",
+      "question": "How does exact 120-second integration alter independent recovery relative to instantaneous observations?",
+      "data": {"type": "synthetic", "field": {"variant": "gaussian_3d"}, "observation": {"mode": "integration_averaged", "integration_duration_sec": 120.0, "integration_samples": 41, "n_beams": 42, "n_ranges": 18, "n_times": 24, "duration_sec": 3600.0, "seed": 0}}
+    },
+    {
+      "name": "long 300 second data only",
+      "question": "How does exact 300-second integration alter independent recovery relative to instantaneous and 120-second observations?",
+      "data": {"type": "synthetic", "field": {"variant": "gaussian_3d"}, "observation": {"mode": "integration_averaged", "integration_duration_sec": 300.0, "integration_samples": 61, "n_beams": 42, "n_ranges": 18, "n_times": 24, "duration_sec": 3600.0, "seed": 0}}
+    },
+    {
+      "name": "long 120 second legacy diagonal",
+      "question": "Does the legacy diagonal derivative prior improve untouched truth metrics over the matched data-only case without derivative collapse?",
+      "data": {"type": "synthetic", "field": {"variant": "gaussian_3d"}, "observation": {"mode": "integration_averaged", "integration_duration_sec": 120.0, "integration_samples": 41, "n_beams": 42, "n_ranges": 18, "n_times": 24, "duration_sec": 3600.0, "seed": 0}},
+      "training": {"derivative_prior": {"mode": "legacy_diagonal_4d", "weight": 0.000001, "adaptive": true}}
+    },
+    {
+      "name": "long 120 second anisotropic Huber",
+      "question": "Does anisotropic-Huber curvature improve untouched truth metrics relative to data-only and legacy diagonal cases?",
+      "data": {"type": "synthetic", "field": {"variant": "gaussian_3d"}, "observation": {"mode": "integration_averaged", "integration_duration_sec": 120.0, "integration_samples": 41, "n_beams": 42, "n_ranges": 18, "n_times": 24, "duration_sec": 3600.0, "seed": 0}},
+      "training": {"derivative_prior": {"mode": "anisotropic_huber_4d", "weight": 0.000001, "vertical_component_weight": 0.1, "adaptive": true}}
+    },
+    {
+      "name": "long 120 second full spatial Hessian",
+      "question": "Does the separately named full spatial-Hessian prior change independent error or derivative health relative to the other priors?",
+      "data": {"type": "synthetic", "field": {"variant": "gaussian_3d"}, "observation": {"mode": "integration_averaged", "integration_duration_sec": 120.0, "integration_samples": 41, "n_beams": 42, "n_ranges": 18, "n_times": 24, "duration_sec": 3600.0, "seed": 0}},
+      "training": {"derivative_prior": {"mode": "spatial_hessian_3d", "weight": 0.000001, "adaptive": false}}
+    },
+    {
+      "name": "long data coordinate collocation",
+      "question": "How does derivative evaluation at observed coordinates affect independent error, derivative health, runtime, and memory?",
+      "data": {"type": "synthetic", "field": {"variant": "chapman_f2_reference"}, "observation": {"mode": "integration_averaged", "integration_duration_sec": 300.0, "integration_samples": 61, "n_beams": 42, "n_ranges": 18, "n_times": 24, "duration_sec": 3600.0, "seed": 0}},
+      "training": {"collocation": {"mode": "data_coordinates", "pool_size": 65536, "batch_size": 16384}, "derivative_prior": {"mode": "anisotropic_huber_4d", "weight": 0.000001, "vertical_component_weight": 0.1}}
+    },
+    {
+      "name": "long support aware collocation",
+      "question": "How does support-aware collocation affect independent error and conformal behavior relative to domain-wide Sobol sampling?",
+      "data": {"type": "synthetic", "field": {"variant": "chapman_f2_reference"}, "observation": {"mode": "integration_averaged", "integration_duration_sec": 300.0, "integration_samples": 61, "n_beams": 42, "n_ranges": 18, "n_times": 24, "duration_sec": 3600.0, "seed": 0}},
+      "training": {"collocation": {"mode": "support_aware", "support_oversample_factor": 4}, "derivative_prior": {"mode": "anisotropic_huber_4d", "weight": 0.000001, "vertical_component_weight": 0.1}}
+    },
+    {
+      "name": "long low collocation count",
+      "question": "What accuracy, derivative-health, runtime, and memory tradeoff results from a smaller operational collocation pool?",
+      "data": {"type": "synthetic", "field": {"variant": "chapman_f2_reference"}, "observation": {"mode": "integration_averaged", "integration_duration_sec": 300.0, "integration_samples": 61, "n_beams": 42, "n_ranges": 18, "n_times": 24, "duration_sec": 3600.0, "seed": 0}},
+      "training": {"collocation": {"pool_size": 32768, "batch_size": 8192, "derivative_microbatch_size": 2048}, "derivative_prior": {"mode": "anisotropic_huber_4d", "weight": 0.000001, "vertical_component_weight": 0.1}}
+    },
+    {
+      "name": "long clustered beam withholding",
+      "question": "Where do empirical coverage and interval width fail under clustered rather than random beam withholding?",
+      "data": {"type": "synthetic", "field": {"variant": "gaussian_3d"}, "observation": {"mode": "integration_averaged", "integration_duration_sec": 120.0, "integration_samples": 41, "n_beams": 42, "n_ranges": 18, "n_times": 24, "duration_sec": 3600.0, "seed": 0}},
+      "split": {"strategy": "clustered"},
+      "training": {"derivative_prior": {"mode": "anisotropic_huber_4d", "weight": 0.000001, "vertical_component_weight": 0.1}}
+    },
+    {
+      "name": "long time block withholding",
+      "question": "How do empirical coverage and width change when complete time blocks rather than beams are held out?",
+      "data": {"type": "synthetic", "field": {"variant": "gaussian_3d"}, "observation": {"mode": "integration_averaged", "integration_duration_sec": 120.0, "integration_samples": 41, "n_beams": 42, "n_ranges": 18, "n_times": 24, "duration_sec": 3600.0, "seed": 0}},
+      "split": {"unit": "time_block", "validation_group_count": 2, "calibration_group_count": 4, "test_group_count": 4},
+      "training": {"derivative_prior": {"mode": "anisotropic_huber_4d", "weight": 0.000001, "vertical_component_weight": 0.1}}
+    },
+    {
+      "name": "long joint beam time withholding",
+      "question": "How do empirical coverage and width change for joint beam-time groups, and where do they fail by support distance?",
+      "data": {"type": "synthetic", "field": {"variant": "gaussian_3d"}, "observation": {"mode": "integration_averaged", "integration_duration_sec": 120.0, "integration_samples": 41, "n_beams": 42, "n_ranges": 18, "n_times": 24, "duration_sec": 3600.0, "seed": 0}},
+      "split": {"unit": "beam_time", "validation_group_count": 24, "calibration_group_count": 48, "test_group_count": 48},
+      "training": {"derivative_prior": {"mode": "anisotropic_huber_4d", "weight": 0.000001, "vertical_component_weight": 0.1}}
+    },
+    {
+      "name": "long PFISR nominal 2 minute matched",
+      "question": "What held-out error and empirical conformal coverage does the nominal 2-minute product obtain in the matched event window?",
+      "data": {"type": "pfisr", "path": "/home/jdiaz/postdoc/codex-inr-radar/data/20120122.001_lp_2min-fitcal.h5", "reader": {"time_start_unix": 1327270741.0, "time_end_unix": 1327278000.0, "minimum_integration_fraction_of_file_median": 0.8}}
+    },
+    {
+      "name": "long PFISR nominal 5 minute matched",
+      "question": "What held-out error and empirical conformal coverage does the nominal 5-minute product obtain under the identical matched-window metric code?",
+      "data": {"type": "pfisr", "path": "/home/jdiaz/postdoc/codex-inr-radar/data/20120122.001_lp_5min.h5", "reader": {"time_start_unix": 1327270741.0, "time_end_unix": 1327278000.0, "minimum_integration_fraction_of_file_median": 0.8}}
+    }
+  ]
+}

@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "purpose": "smoke",
+  "output_root": "/home/jdiaz/postdoc/inr-isr-4d/outputs/studies/smoke",
+  "defaults": {
+    "split": {
+      "unit": "beam",
+      "strategy": "random",
+      "validation_group_count": 1,
+      "calibration_group_count": 1,
+      "test_group_count": 1,
+      "seed": 0
+    },
+    "training": {
+      "model": {"hidden_features": 12, "hidden_layers": 1},
+      "optimization": {"learning_rate": 0.0005, "num_steps": 3, "data_batch_size": 32, "seed": 0},
+      "collocation": {"mode": "sobol", "pool_size": 32, "batch_size": 16, "derivative_microbatch_size": 8, "seed": 0},
+      "derivative_prior": {"mode": "none", "weight": 0.0},
+      "runtime": {"device": "cpu", "inference_chunk_size": 64, "diagnostic_probe_size": 16, "history_every": 1, "checkpoint_every": 1}
+    },
+    "conformal": {"alpha": 0.05, "bootstrap_repetitions": 10}
+    ,"synthetic_truth": {"count": 128, "seed_offset": 100000}
+  },
+  "cases": [
+    {
+      "name": "synthetic instantaneous data only",
+      "question": "Does the canonical 4D path fit and evaluate instantaneous observations without a derivative prior?",
+      "data": {
+        "type": "synthetic",
+        "field": {"variant": "gaussian_3d"},
+        "observation": {"mode": "instantaneous", "integration_duration_sec": 0.0, "integration_samples": 1, "n_beams": 7, "n_ranges": 4, "n_times": 4, "duration_sec": 600.0, "seed": 0}
+      }
+    },
+    {
+      "name": "synthetic 120 second legacy derivative",
+      "question": "Does the 120-second integrated observation path train with independent legacy-diagonal collocation?",
+      "data": {
+        "type": "synthetic",
+        "field": {"variant": "gaussian_3d"},
+        "observation": {"mode": "integration_averaged", "integration_duration_sec": 120.0, "integration_samples": 7, "n_beams": 7, "n_ranges": 4, "n_times": 4, "duration_sec": 600.0, "seed": 0}
+      },
+      "training": {"derivative_prior": {"mode": "legacy_diagonal_4d", "weight": 0.000001}}
+    },
+    {
+      "name": "synthetic 300 second anisotropic derivative",
+      "question": "Does the 300-second integrated observation path train with the anisotropic-Huber derivative prior?",
+      "data": {
+        "type": "synthetic",
+        "field": {"variant": "chapman_f2_reference"},
+        "observation": {"mode": "integration_averaged", "integration_duration_sec": 300.0, "integration_samples": 9, "n_beams": 7, "n_ranges": 4, "n_times": 4, "duration_sec": 900.0, "seed": 0}
+      },
+      "training": {"derivative_prior": {"mode": "anisotropic_huber_4d", "weight": 0.000001, "vertical_component_weight": 0.1}}
+    },
+    {
+      "name": "synthetic conformal random beam",
+      "question": "Does random beam withholding preserve disjoint calibration and test groups through empirical conformal evaluation?",
+      "data": {
+        "type": "synthetic",
+        "field": {"variant": "gaussian_3d"},
+        "observation": {"mode": "instantaneous", "integration_duration_sec": 0.0, "integration_samples": 1, "n_beams": 8, "n_ranges": 3, "n_times": 4, "duration_sec": 600.0, "seed": 3}
+      },
+      "split": {"calibration_group_count": 2, "test_group_count": 2}
+    },
+    {
+      "name": "synthetic conformal clustered beam",
+      "question": "Does exact-count clustered beam withholding preserve disjoint calibration and test groups?",
+      "data": {
+        "type": "synthetic",
+        "field": {"variant": "gaussian_3d"},
+        "observation": {"mode": "instantaneous", "integration_duration_sec": 0.0, "integration_samples": 1, "n_beams": 8, "n_ranges": 3, "n_times": 4, "duration_sec": 600.0, "seed": 4}
+      },
+      "split": {"strategy": "clustered", "calibration_group_count": 2, "test_group_count": 2}
+    },
+    {
+      "name": "PFISR nominal 2 minute matched window",
+      "question": "Does a bounded nominal 2-minute PFISR window pass the same canonical unweighted reconstruction and conformal path?",
+      "data": {
+        "type": "pfisr",
+        "path": "/home/jdiaz/postdoc/codex-inr-radar/data/20120122.001_lp_2min-fitcal.h5",
+        "reader": {"time_start_unix": 1327270741.0, "time_end_unix": 1327271800.0, "minimum_integration_fraction_of_file_median": 0.8}
+      }
+    },
+    {
+      "name": "PFISR nominal 5 minute matched window",
+      "question": "Does the physically matched nominal 5-minute PFISR window pass the identical metric and withholding path?",
+      "data": {
+        "type": "pfisr",
+        "path": "/home/jdiaz/postdoc/codex-inr-radar/data/20120122.001_lp_5min.h5",
+        "reader": {"time_start_unix": 1327270741.0, "time_end_unix": 1327271800.0, "minimum_integration_fraction_of_file_median": 0.8}
+      }
+    },
+    {
+      "name": "interrupted and resumed synthetic joint split",
+      "question": "Does the runner complete an intentional interruption through genuine checkpoint resumption under joint beam-time withholding?",
+      "data": {
+        "type": "synthetic",
+        "field": {"variant": "gaussian_3d"},
+        "observation": {"mode": "instantaneous", "integration_duration_sec": 0.0, "integration_samples": 1, "n_beams": 5, "n_ranges": 3, "n_times": 4, "duration_sec": 600.0, "seed": 8}
+      },
+      "split": {"unit": "beam_time", "calibration_group_count": 2, "test_group_count": 2},
+      "verification": {"interrupt_after_steps": 1, "resume_immediately": true}
+    }
+  ]
+}

@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "purpose": "pilot",
+  "output_root": "/home/jdiaz/postdoc/inr-isr-4d/outputs/studies/pilot",
+  "defaults": {
+    "split": {"unit": "beam", "strategy": "random", "validation_group_count": 2, "calibration_group_count": 3, "test_group_count": 3, "seed": 0},
+    "training": {
+      "model": {"hidden_features": 64, "hidden_layers": 2},
+      "optimization": {"learning_rate": 0.0001, "num_steps": 100, "data_batch_size": 1024, "seed": 0},
+      "collocation": {"mode": "sobol", "pool_size": 4096, "batch_size": 1024, "derivative_microbatch_size": 256, "seed": 0},
+      "derivative_prior": {"mode": "none", "weight": 0.0},
+      "runtime": {"device": "auto", "inference_chunk_size": 8192, "diagnostic_probe_size": 512, "history_every": 10, "checkpoint_every": 50}
+    },
+    "conformal": {"alpha": 0.05, "bootstrap_repetitions": 100}
+    ,"synthetic_truth": {"count": 10000, "seed_offset": 100000}
+  },
+  "cases": [
+    {
+      "name": "pilot 120 second data only",
+      "question": "What bounded runtime, memory, error, and coverage baseline does 120-second integration produce without a derivative prior?",
+      "data": {"type": "synthetic", "field": {"variant": "gaussian_3d"}, "observation": {"mode": "integration_averaged", "integration_duration_sec": 120.0, "integration_samples": 21, "n_beams": 16, "n_ranges": 10, "n_times": 10, "duration_sec": 1800.0, "seed": 0}}
+    },
+    {
+      "name": "pilot 120 second legacy diagonal",
+      "question": "Is the legacy diagonal prior numerically healthy at pilot scale relative to the matched data-only case?",
+      "data": {"type": "synthetic", "field": {"variant": "gaussian_3d"}, "observation": {"mode": "integration_averaged", "integration_duration_sec": 120.0, "integration_samples": 21, "n_beams": 16, "n_ranges": 10, "n_times": 10, "duration_sec": 1800.0, "seed": 0}},
+      "training": {"derivative_prior": {"mode": "legacy_diagonal_4d", "weight": 0.000001}}
+    },
+    {
+      "name": "pilot 120 second anisotropic Huber",
+      "question": "Is the anisotropic-Huber prior numerically healthy and operationally comparable at pilot scale?",
+      "data": {"type": "synthetic", "field": {"variant": "gaussian_3d"}, "observation": {"mode": "integration_averaged", "integration_duration_sec": 120.0, "integration_samples": 21, "n_beams": 16, "n_ranges": 10, "n_times": 10, "duration_sec": 1800.0, "seed": 0}},
+      "training": {"derivative_prior": {"mode": "anisotropic_huber_4d", "weight": 0.000001, "vertical_component_weight": 0.1}}
+    },
+    {
+      "name": "pilot support aware high collocation",
+      "question": "Can support-aware sampling and a larger logical pool run within the planned microbatch memory contract?",
+      "data": {"type": "synthetic", "field": {"variant": "chapman_f2_reference"}, "observation": {"mode": "integration_averaged", "integration_duration_sec": 300.0, "integration_samples": 31, "n_beams": 16, "n_ranges": 10, "n_times": 10, "duration_sec": 2400.0, "seed": 1}},
+      "training": {"collocation": {"mode": "support_aware", "pool_size": 16384, "batch_size": 4096, "derivative_microbatch_size": 256}, "derivative_prior": {"mode": "spatial_hessian_3d", "weight": 0.000001}}
+    },
+    {
+      "name": "pilot clustered beam conformal",
+      "question": "How do timing and empirical interval outputs behave for exact-count clustered beam withholding?",
+      "data": {"type": "synthetic", "field": {"variant": "gaussian_3d"}, "observation": {"mode": "instantaneous", "integration_duration_sec": 0.0, "integration_samples": 1, "n_beams": 16, "n_ranges": 10, "n_times": 10, "duration_sec": 1800.0, "seed": 2}},
+      "split": {"strategy": "clustered"}
+    },
+    {
+      "name": "pilot PFISR nominal 2 minute",
+      "question": "What bounded runtime and held-out behavior occurs for the nominal 2-minute product in a matched physical window?",
+      "data": {"type": "pfisr", "path": "/home/jdiaz/postdoc/codex-inr-radar/data/20120122.001_lp_2min-fitcal.h5", "reader": {"time_start_unix": 1327270741.0, "time_end_unix": 1327274400.0, "minimum_integration_fraction_of_file_median": 0.8}}
+    },
+    {
+      "name": "pilot PFISR nominal 5 minute",
+      "question": "What bounded runtime and held-out behavior occurs for the matched nominal 5-minute product using identical metric code?",
+      "data": {"type": "pfisr", "path": "/home/jdiaz/postdoc/codex-inr-radar/data/20120122.001_lp_5min.h5", "reader": {"time_start_unix": 1327270741.0, "time_end_unix": 1327274400.0, "minimum_integration_fraction_of_file_median": 0.8}}
+    }
+  ]
+}

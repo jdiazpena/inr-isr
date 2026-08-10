@@ -30,7 +30,11 @@ from inr_isr_4d.config import (
     OptimizationConfig,
     RuntimeConfig,
 )
-from inr_isr_4d.evaluation import calibrate_and_evaluate
+from inr_isr_4d.evaluation import (
+    calibrate_and_evaluate,
+    calibrate_checkpoint,
+    evaluate_checkpoint,
+)
 from inr_isr_4d.splits import make_group_split, observation_group_ids, prepare_training_problem
 from inr_isr_4d.training import train_4d
 
@@ -236,3 +240,26 @@ def test_checkpoint_consuming_calibration_and_evaluation_stage(tmp_path: Path) -
         "group_ids",
         "support_distance_km",
     }
+
+    separate_calibration = tmp_path / "separate" / "calibration.json"
+    state = calibrate_checkpoint(
+        bundle=bundle,
+        split=split,
+        coordinate_scaler=problem.coordinate_scaler,
+        target_scaler=problem.target_scaler,
+        checkpoint_path=run.output_directory / "checkpoint.pt",
+        calibration_path=separate_calibration,
+        alpha=0.1,
+    )
+    assert state["rank_one_indexed"] >= 1
+    separate_summary = evaluate_checkpoint(
+        bundle=bundle,
+        split=split,
+        coordinate_scaler=problem.coordinate_scaler,
+        target_scaler=problem.target_scaler,
+        checkpoint_path=run.output_directory / "checkpoint.pt",
+        calibration_path=separate_calibration,
+        output_directory=tmp_path / "separate" / "evaluation",
+        bootstrap_repetitions=10,
+    )
+    assert separate_summary["marginal_interval_metrics"] == summary["marginal_interval_metrics"]

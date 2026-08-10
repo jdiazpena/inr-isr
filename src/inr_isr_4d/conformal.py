@@ -72,6 +72,35 @@ class ConformalCalibration:
         }
 
 
+def calibration_from_state(state: Mapping[str, object]) -> ConformalCalibration:
+    required = {
+        "schema_version",
+        "alpha",
+        "quantile",
+        "rank_one_indexed",
+        "scores",
+        "calibration_groups",
+        "calibration_unit",
+        "model_identity",
+        "prediction_transform",
+        "score_convention",
+    }
+    if set(state) != required or state["schema_version"] != 1:
+        raise ValueError("Invalid conformal calibration artifact schema.")
+    if state["score_convention"] != "absolute_residual_symmetric":
+        raise ValueError("Unsupported conformal score convention.")
+    return ConformalCalibration(
+        alpha=float(state["alpha"]),
+        quantile=float(state["quantile"]),
+        rank=int(state["rank_one_indexed"]),
+        scores=np.asarray(state["scores"], dtype=float),
+        calibration_groups=tuple(state["calibration_groups"]),
+        calibration_unit=str(state["calibration_unit"]),
+        model_identity=str(state["model_identity"]),
+        prediction_transform=str(state["prediction_transform"]),
+    )
+
+
 def calibrate_split_conformal(
     predictions: np.ndarray,
     targets: np.ndarray,

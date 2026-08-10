@@ -15,6 +15,7 @@ import torch
 from .checkpoint import atomic_json_save
 from .config import FourDConfig, config_from_mapping
 from .conformal import (
+    calibration_from_state,
     calibrate_split_conformal,
     conformal_intervals,
     empirical_interval_metrics,
@@ -124,6 +125,176 @@ def _atomic_npz(path: Path, **arrays: np.ndarray) -> None:
         os.replace(temporary_name, path)
     finally:
         Path(temporary_name).unlink(missing_ok=True)
+
+
+def _validate_checkpoint_contract(
+    checkpoint: dict[str, Any],
+    split: GroupSplit4D,
+    coordinate_scaler: AffineScaler,
+    target_scaler: AffineScaler,
+) -> None:
+    if checkpoint["splits"] != split.state_dict():
+        raise ValueError("The checkpoint split does not match the evaluation split.")
+    expected_preprocessing = {
+        "coordinates": coordinate_scaler.state_dict(),
+        "targets": target_scaler.state_dict(),
+    }
+    if checkpoint["preprocessing"] != expected_preprocessing:
+        raise ValueError("The checkpoint preprocessing does not match evaluation preprocessing.")
+
+
+def calibrate_checkpoint(
+    *,
+    bundle: FieldBundle4D,
+    split: GroupSplit4D,
+    coordinate_scaler: AffineScaler,
+    target_scaler: AffineScaler,
+    checkpoint_path: Path,
+    calibration_path: Path,
+    alpha: float,
+) -> dict[str, object]:
+    """Run only conformal calibration; do not inspect test targets."""
+
+    calibration_path = Path(calibration_path)
+    if calibration_path.exists():
+        raise FileExistsError(f"Calibration artifact already exists: {calibration_path}")
+    if len(split.calibration_indices) == 0:
+        raise ValueError("Conformal calibration split is empty.")
+    model, config, checkpoint, device, dtype = load_trained_model(checkpoint_path)
+    _validate_checkpoint_contract(checkpoint, split, coordinate_scaler, target_scaler)
+    calibration_bundle = bundle.subset(split.calibration_indices)
+    predictions = predict_chunked(
+        model,
+        calibration_bundle.coordinates,
+        coordinate_scaler,
+        target_scaler,
+        device=device,
+        dtype=dtype,
+        chunk_size=config.runtime.inference_chunk_size,
+    )
+    calibration = calibrate_split_conformal(
+        predictions,
+        calibration_bundle.targets,
+        alpha=alpha,
+        calibration_groups=split.calibration_groups,
+        calibration_unit=split.unit,
+        model_identity="sha256:" + file_sha256(checkpoint_path),
+        prediction_transform="inverse training-only affine transform in log10 electron density",
+    )
+    state = calibration.state_dict()
+    atomic_json_save(state, calibration_path)
+    return state
+
+
+def evaluate_checkpoint(
+    *,
+    bundle: FieldBundle4D,
+    split: GroupSplit4D,
+    coordinate_scaler: AffineScaler,
+    target_scaler: AffineScaler,
+    checkpoint_path: Path,
+    calibration_path: Path,
+    output_directory: Path,
+    bootstrap_repetitions: int = 200,
+) -> dict[str, Any]:
+    """Evaluate untouched test groups using an already saved calibration artifact."""
+
+    output_directory = Path(output_directory)
+    if output_directory.exists():
+        raise FileExistsError(f"Evaluation directory already exists: {output_directory}")
+    if len(split.test_indices) == 0:
+        raise ValueError("Conformal test split is empty.")
+    model, config, checkpoint, device, dtype = load_trained_model(checkpoint_path)
+    _validate_checkpoint_contract(checkpoint, split, coordinate_scaler, target_scaler)
+    with Path(calibration_path).open("r", encoding="utf-8") as handle:
+        calibration = calibration_from_state(json.load(handle))
+    model_identity = "sha256:" + file_sha256(checkpoint_path)
+    if calibration.model_identity != model_identity:
+        raise ValueError("Calibration artifact belongs to a different model checkpoint.")
+    if calibration.calibration_unit != split.unit or tuple(calibration.calibration_groups) != tuple(split.calibration_groups):
+        raise ValueError("Calibration groups/unit differ from the evaluation split.")
+    output_directory.mkdir(parents=True, exist_ok=False)
+
+    test_bundle = bundle.subset(split.test_indices)
+    test_prediction = predict_chunked(
+        model,
+        test_bundle.coordinates,
+        coordinate_scaler,
+        target_scaler,
+        device=device,
+        dtype=dtype,
+        chunk_size=config.runtime.inference_chunk_size,
+    )
+    lower, upper = conformal_intervals(test_prediction, calibration)
+    support_distance = _nearest_support_distance(
+        test_bundle.coordinates, bundle.coordinates[split.train_indices]
+    )
+    test_unit_ids = observation_group_ids(test_bundle, split.unit)
+    strata = {
+        "beam": test_bundle.beam_ids,
+        "time_block": test_bundle.time_ids,
+        "altitude": _bin_labels(test_bundle.coordinates[:, 2], "altitude"),
+        "support_distance": _bin_labels(support_distance, "support_distance"),
+    }
+    if len(np.unique(test_unit_ids)) >= 2:
+        bootstrap: dict[str, Any] = group_bootstrap_coverage(
+            test_bundle.targets,
+            lower,
+            upper,
+            test_unit_ids,
+            repetitions=bootstrap_repetitions,
+            seed=split.seed,
+        )
+    else:
+        bootstrap = {
+            "status": "unavailable",
+            "reason": "At least two test groups are required for a group bootstrap.",
+        }
+    point = point_metrics(test_prediction, test_bundle.targets)
+    if not np.isfinite(point["r_squared"]):
+        point["r_squared"] = None
+    summary: dict[str, Any] = {
+        "schema_version": 1,
+        "model_identity": model_identity,
+        "checkpoint": str(Path(checkpoint_path).resolve()),
+        "split": split.state_dict(),
+        "point_metrics_log10_density": point,
+        "marginal_interval_metrics": empirical_interval_metrics(test_bundle.targets, lower, upper),
+        "stratified_interval_metrics": stratified_interval_metrics(test_bundle.targets, lower, upper, strata),
+        "group_bootstrap": bootstrap,
+        "interpretation": {
+            "coverage": "empirical point-level coverage on untouched held-out groups",
+            "calibration_unit": split.unit,
+            "test_unit": split.unit,
+            "exchangeability_assumption": "Calibration and test scores must be exchangeable at the declared sampling unit.",
+            "limitation": "Correlated and grouped radar sampling can violate point-level exchangeability; no unconditional coverage guarantee is claimed.",
+        },
+    }
+    atomic_json_save(summary, output_directory / "evaluation_summary.json")
+    _atomic_npz(
+        output_directory / "predictions.npz",
+        coordinates=test_bundle.coordinates,
+        targets=test_bundle.targets,
+        predictions=test_prediction,
+        residuals=test_prediction - test_bundle.targets,
+        interval_lower=lower,
+        interval_upper=upper,
+        beam_ids=test_bundle.beam_ids,
+        time_ids=test_bundle.time_ids,
+        group_ids=test_bundle.group_ids,
+        support_distance_km=support_distance,
+    )
+    atomic_json_save(
+        {
+            "schema_version": 1,
+            "status": "complete",
+            "model_identity": model_identity,
+            "summary": "evaluation_summary.json",
+            "predictions": "predictions.npz",
+        },
+        output_directory / "COMPLETED.json",
+    )
+    return summary
 
 
 def calibrate_and_evaluate(

@@ -9,4 +9,6 @@ outputs/
 checkpoints/
 *.h5
 *.hdf5
-
+*.egg-info/
+build/
+dist/

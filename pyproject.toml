@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "inr-isr-4d"
+version = "0.1.0"
+description = "Additive 4D ISR neural-field and split-conformal benchmark pipeline"
+requires-python = ">=3.11"
+dependencies = [
+  "h5py>=3.15",
+  "numpy>=1.26",
+  "torch>=2.11"
+]
+
+[project.scripts]
+inr-isr-4d = "inr_isr_4d.runner:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+py-modules = ["models"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["inr_isr_4d*"]
