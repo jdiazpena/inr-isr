@@ -76,6 +76,32 @@ def test_pool_size_and_batch_size_change_actual_derivative_sets() -> None:
     torch.testing.assert_close(small.coordinates, large.coordinates[:8], rtol=0, atol=0)
 
 
+def test_declared_collocation_domain_bounds_are_consumed() -> None:
+    config = config_from_mapping(
+        {
+            "collocation": {
+                "domain_lower": [-0.5, -0.25, 0.0, 0.25],
+                "domain_upper": [0.5, 0.25, 0.75, 1.0],
+            }
+        }
+    )
+    pool = make_collocation_pool(
+        mode="sobol",
+        pool_size=64,
+        seed=2,
+        domain_lower=config.collocation.domain_lower,
+        domain_upper=config.collocation.domain_upper,
+    )
+    lower = torch.tensor(config.collocation.domain_lower)
+    upper = torch.tensor(config.collocation.domain_upper)
+    assert torch.all(pool.coordinates >= lower)
+    assert torch.all(pool.coordinates <= upper)
+    with pytest.raises(ValueError, match="normalized collocation bound"):
+        config_from_mapping(
+            {"collocation": {"domain_lower": [-1.1, -1.0, -1.0, -1.0]}}
+        )
+
+
 def test_collocation_batch_changes_deterministically_with_step() -> None:
     pool = make_collocation_pool(mode="sobol", pool_size=32, seed=2)
     same_a = pool.sample(8, step=5)

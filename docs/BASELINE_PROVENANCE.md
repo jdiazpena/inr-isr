@@ -9,13 +9,17 @@ Status: Verified copied 3D foundation
 - Source working tree: `/home/jdiaz/postdoc/codex-inr-radar/inf_fakedata_3d`
 - Source parent Git commit: `0b5e104ef6acac8efeec0ade6fedc82a1bf8ce6a`
 - Target repository: `/home/jdiaz/postdoc/inr-isr-4d`
+- Immutable baseline commit: `afaa3df`
+- Immutable baseline Git tree: `e62cdad5feac32edc211acda941aa79f5da70e08`
+- Baseline tracked inventory: 80 files
 - Existing 4D reference, read-only: `/home/jdiaz/codex/postdocanid/inr-isr`
 - Existing 4D reference commit: `62b0093f902b3770310659b233670580e716ea88`
 
 The source directory had tracked modifications and untracked implementation and
 documentation files. The target was copied from the complete current working tree,
 not reconstructed from the parent commit. No source file was cleaned, reset, or
-modified.
+modified. The immutable Git tree above is the recorded content-addressed inventory
+of the copied baseline plus the permitted local `.gitignore` and provenance record.
 
 ## Explicit copy exclusions
 

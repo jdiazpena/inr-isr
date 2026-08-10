@@ -15,7 +15,7 @@ from typing import Any, Iterable, Mapping
 import numpy as np
 
 from .checkpoint import atomic_json_save
-from .config import FourDConfig, config_from_mapping
+from .config import FourDConfig, apply_explicit_overrides, config_from_mapping
 from .evaluation import calibrate_checkpoint, evaluate_checkpoint
 from .pfisr import PFISRReadConfig, inspect_pfisr_hdf5, read_pfisr_4d
 from .splits import GroupSplit4D, make_group_split, prepare_training_problem
@@ -120,6 +120,7 @@ def load_manifest(path: Path) -> dict[str, Any]:
             expanded.append(repeated)
     manifest = dict(manifest)
     manifest.pop("defaults", None)
+    manifest["_source_path"] = str(Path(path).resolve())
     manifest["cases"] = expanded
     ids = [case_identifier(case) for case in manifest["cases"]]
     if len(ids) != len(set(ids)):
@@ -179,6 +180,17 @@ def _build_data(case: Mapping[str, Any]):
     reader = _dataclass_from_mapping(PFISRReadConfig, data["reader"], "PFISR reader")
     generated = read_pfisr_4d(Path(data["path"]), reader)
     finite_relative = generated.relative_uncertainty[np.isfinite(generated.relative_uncertainty)]
+    selected_records = np.unique(generated.record_indices)
+    record_timing = [
+        {
+            "record_index": int(record),
+            "start_unix": float(generated.metadata.unix_start[record]),
+            "end_unix": float(generated.metadata.unix_end[record]),
+            "midpoint_unix": float(generated.metadata.unix_mid[record]),
+            "duration_sec": float(generated.metadata.integration_duration_sec[record]),
+        }
+        for record in selected_records
+    ]
     metadata = {
         "type": "pfisr",
         "file": generated.metadata.state_dict(),
@@ -186,7 +198,8 @@ def _build_data(case: Mapping[str, Any]):
         "observations": generated.bundle.size,
         "beams": len(np.unique(generated.bundle.beam_ids)),
         "time_blocks": len(np.unique(generated.bundle.time_ids)),
-        "selected_record_indices": np.unique(generated.record_indices).tolist(),
+        "selected_record_indices": selected_records.tolist(),
+        "selected_record_timing": record_timing,
         "selected_unix_start": float(generated.unix_start.min()),
         "selected_unix_end": float(generated.unix_end.max()),
         "integration_duration_unique_sec": np.unique(generated.integration_duration_sec).tolist(),
@@ -239,16 +252,19 @@ def _plan_case(manifest: Mapping[str, Any], case: Mapping[str, Any], attempt_id:
             "pool_size": config.collocation.pool_size,
             "batch_size": config.collocation.batch_size,
             "derivative_microbatch_size": config.collocation.derivative_microbatch_size,
+            "normalized_domain_lower": list(config.collocation.domain_lower),
+            "normalized_domain_upper": list(config.collocation.domain_upper),
         },
         "data_batch_size": config.optimization.data_batch_size,
+        "optimization_seed": config.optimization.seed,
         "inference_chunk_size": config.runtime.inference_chunk_size,
         "diagnostic_probe_size": config.runtime.diagnostic_probe_size,
         "requested_device": config.runtime.device,
         "precision": config.runtime.precision,
         "amp": config.runtime.amp,
         "planned_commands": {
-            "train": f"python -m inr_isr_4d.runner MANIFEST train --case-id {case_identifier(case)}",
-            "resume": f"python -m inr_isr_4d.runner MANIFEST train --case-id {case_identifier(case)} --resume",
+            "train": f"python -m inr_isr_4d.runner {manifest['_source_path']} train --case-id {case_identifier(case)}",
+            "resume": f"python -m inr_isr_4d.runner {manifest['_source_path']} train --case-id {case_identifier(case)} --resume",
         },
         "planned_outputs": {
             "checkpoint": str(case_directory / "train" / "checkpoint.pt"),
@@ -356,7 +372,11 @@ def run_case_stage(
         raise RuntimeError("Calibrate stage is incomplete.")
     if stage == "evaluate":
         completion = directory / "evaluation" / "COMPLETED.json"
-        required_evaluation = [directory / "evaluation" / "predictions.npz"]
+        required_evaluation = [
+            directory / "evaluation" / "predictions.npz",
+            directory / "evaluation" / "metrics.csv",
+            directory / "evaluation" / "stratified_intervals.csv",
+        ]
         if case["data"]["type"] == "synthetic":
             required_evaluation.extend(
                 [
@@ -504,7 +524,48 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--restart", action="store_true")
     parser.add_argument("--attempt-id", default="main")
+    parser.add_argument("--seed", type=int, default=argparse.SUPPRESS)
+    parser.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="SECTION.FIELD=JSON_VALUE",
+        help="Explicit strict 4D configuration override; may be repeated.",
+    )
     return parser
+
+
+def _explicit_cli_overrides(items: list[str], seed: int | None) -> dict[str, Any]:
+    overrides: dict[str, Any] = {}
+    if seed is not None:
+        overrides["optimization.seed"] = seed
+    for item in items:
+        if "=" not in item:
+            raise ValueError(f"Invalid --set value without '=': {item}")
+        name, encoded = item.split("=", 1)
+        if name in overrides:
+            raise ValueError(f"Configuration override supplied more than once: {name}")
+        try:
+            overrides[name] = json.loads(encoded)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"Invalid JSON value in --set {item}") from error
+    return overrides
+
+
+def _override_cases(
+    cases: list[Mapping[str, Any]], overrides: Mapping[str, Any]
+) -> list[Mapping[str, Any]]:
+    if not overrides:
+        return cases
+    result = []
+    for case in cases:
+        updated = json.loads(json.dumps(case))
+        config = apply_explicit_overrides(
+            config_from_mapping(updated["training"]), overrides
+        )
+        updated["training"] = config.to_dict()
+        result.append(updated)
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -515,6 +576,8 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("attempt-id contains unsupported characters.")
     manifest = load_manifest(args.manifest)
     cases = _selected_cases(manifest, args.case_id)
+    seed = args.seed if hasattr(args, "seed") else None
+    cases = _override_cases(cases, _explicit_cli_overrides(args.set, seed))
     if args.stage == "manifest":
         result: Any = [
             {"case_id": case_identifier(case), "name": case["name"], "question": case["question"]}

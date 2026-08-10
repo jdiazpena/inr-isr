@@ -8,6 +8,7 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
+import numpy as np
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -115,6 +116,8 @@ def test_all_stages_and_interrupted_resume_case_complete(tmp_path: Path, capsys)
     assert (case_directory / "train" / "COMPLETED.json").is_file()
     assert (case_directory / "uq" / "calibration.json").is_file()
     assert (case_directory / "evaluation" / "predictions.npz").is_file()
+    truth_predictions = np.load(case_directory / "synthetic_truth" / "predictions.npz")
+    assert "instantaneous_midpoint_truth_log10_ne" in truth_predictions.files
     assert (case_directory / "SUMMARY.json").is_file()
     history = (case_directory / "train" / "history.jsonl").read_text().splitlines()
     assert [json.loads(line)["step"] for line in history] == [1, 2, 3]
@@ -137,3 +140,26 @@ def test_restart_requires_new_explicit_attempt(tmp_path: Path) -> None:
     write_manifest(path, manifest_dict(tmp_path / "outputs"))
     with pytest.raises(ValueError, match="attempt-id"):
         main([str(path), "all", "--restart"])
+
+
+def test_explicit_cli_seed_zero_and_strict_set_override(tmp_path: Path, capsys) -> None:
+    manifest = manifest_dict(tmp_path / "outputs")
+    manifest["cases"][0]["training"]["optimization"]["seed"] = 9
+    path = tmp_path / "manifest.json"
+    write_manifest(path, manifest)
+    assert main(
+        [
+            str(path),
+            "all",
+            "--dry-run",
+            "--seed",
+            "0",
+            "--set",
+            "runtime.inference_chunk_size=5",
+        ]
+    ) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan[0]["optimization_seed"] == 0
+    assert plan[0]["inference_chunk_size"] == 5
+    assert plan[0]["collocation"]["normalized_domain_lower"] == [-1.0] * 4
+    assert plan[0]["collocation"]["normalized_domain_upper"] == [1.0] * 4

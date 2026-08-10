@@ -32,6 +32,9 @@ dimension-independent framework.
 7. `training.py` is the one canonical 4D training path used by all later synthetic
    and PFISR adapters.
 8. `checkpoint.py` atomically saves complete resumable state.
+9. `constraints.py` defines a versioned, tested extension protocol for possible
+   future constraints. No scientific constraint is implemented by that interface;
+   the current trainer ships only the derivative priors named above.
 
 Conformal calibration will consume a trained checkpoint, saved preprocessing, and a
 saved split in a later evaluation stage. It will not be another training program.
@@ -42,7 +45,12 @@ Observation minibatch size, collocation-pool size, collocation batch size, deriv
 microbatch size, inference chunk size, and fixed diagnostic-probe size are distinct
 configuration values. Derivative microbatches are reduced by their exact fraction of
 the collocation batch, so their gradient and scalar reduction match an unchunked
-mean. This supports logical collocation pools larger than immediate 16 GB GPU memory.
+mean. The seeded diagnostic probe is created once and remains fixed even when the
+training collocation pool is resampled or training resumes from a checkpoint.
+Normalized lower and upper `(x, y, z, t)` collocation bounds are explicit validated
+configuration fields and are written into the resolved configuration and dry-run
+plan. This supports logical collocation pools larger than immediate 16 GB GPU memory
+while keeping derivative-health diagnostics comparable over training.
 
 ## Output safety contract
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 import numpy as np
@@ -44,6 +44,7 @@ class GroupSplit4D:
     validation_groups: tuple[object, ...]
     calibration_groups: tuple[object, ...]
     test_groups: tuple[object, ...]
+    group_geometry: dict[str, list[dict[str, object]]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         arrays = []
@@ -102,6 +103,7 @@ class GroupSplit4D:
                     "test": len(self.test_groups),
                 },
             },
+            "withholding_geometry": self.group_geometry,
         }
 
 
@@ -184,6 +186,44 @@ def make_group_split(
     def indices(selected: np.ndarray) -> np.ndarray:
         return np.flatnonzero(np.isin(ids, selected))
 
+    role_groups = {
+        "train": train_groups,
+        "validation": validation_groups,
+        "calibration": calibration_groups,
+        "test": test_groups,
+    }
+    all_centers = _centroids(bundle, ids, groups)
+    physical_centers = np.asarray(
+        [bundle.coordinates[ids == group].mean(axis=0) for group in groups], dtype=float
+    )
+    train_mask = np.isin(groups, train_groups)
+    geometry: dict[str, list[dict[str, object]]] = {}
+    for role, selected in role_groups.items():
+        rows = []
+        for group in selected:
+            position = int(np.flatnonzero(groups == group)[0])
+            nearest = (
+                0.0
+                if role == "train"
+                else float(
+                    np.linalg.norm(
+                        all_centers[train_mask] - all_centers[position], axis=1
+                    ).min()
+                )
+            )
+            rows.append(
+                {
+                    "group_id": _python(group),
+                    "centroid_x_km": float(physical_centers[position, 0]),
+                    "centroid_y_km": float(physical_centers[position, 1]),
+                    "centroid_z_km": float(physical_centers[position, 2]),
+                    "centroid_t_sec": float(physical_centers[position, 3]),
+                    "nearest_training_group_normalized_centroid_distance": nearest,
+                    "observation_count": int(np.sum(ids == group)),
+                }
+            )
+        geometry[role] = rows
+
     return GroupSplit4D(
         unit=unit,
         strategy=strategy,
@@ -196,6 +236,7 @@ def make_group_split(
         validation_groups=tuple(_python(value) for value in validation_groups),
         calibration_groups=tuple(_python(value) for value in calibration_groups),
         test_groups=tuple(_python(value) for value in test_groups),
+        group_geometry=geometry,
     )
 
 

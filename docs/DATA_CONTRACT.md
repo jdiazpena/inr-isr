@@ -32,9 +32,10 @@ The four disjoint roles are:
 - test: one untouched final empirical evaluation.
 
 The saved split contains exact indices, group identifiers, observation/group
-counts, strategy, unit, and seed. `TrainingProblem4D` contains only training indices
-for optimization even though the immutable source bundle remains available to later
-separate stages.
+counts, strategy, unit, seed, per-group coordinate centroids, and each group's
+nearest normalized distance to a training-group centroid. `TrainingProblem4D`
+contains only training indices for optimization even though the immutable source
+bundle remains available to later separate stages.
 
 ## Normalization
 
@@ -46,5 +47,13 @@ The fitted state is saved in both run metadata and every complete checkpoint.
 ## External PFISR data
 
 The external HDF5 files are read-only inputs and are never copied into or committed
-to this repository. Their exact reader/filter/integration-duration contract will be
-added and verified as a separate adapter milestone.
+to this repository. The PFISR adapter reads each record's actual start, end,
+midpoint, and duration metadata, retains the supplied uncertainty values without
+inventing replacements, and applies uncertainty-quality filtering only when it is
+explicitly configured. The files remain the nominal 2-minute and nominal 5-minute
+products; exact record durations are preserved for provenance and synthetic
+integration comparisons rather than used to rename the products. Manifests exclude
+incomplete endpoint records using an explicit relative-duration completeness rule.
+Every generated PFISR case summary includes a per-record table with the exact source
+record index, UTC start, UTC end, UTC midpoint, and duration, in addition to the
+aggregate duration distribution and selected observation counts.

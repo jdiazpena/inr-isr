@@ -96,6 +96,9 @@ def test_group_splits_are_exact_deterministic_and_disjoint(unit: str, strategy: 
         [first.train_indices, first.validation_indices, first.calibration_indices, first.test_indices]
     )
     np.testing.assert_array_equal(np.sort(all_indices), np.arange(bundle.size))
+    for role in ("train", "validation", "calibration", "test"):
+        assert len(first.group_geometry[role]) == len(getattr(first, f"{role}_groups"))
+        assert all("nearest_training_group_normalized_centroid_distance" in row for row in first.group_geometry[role])
 
 
 def test_train_only_preprocessing_does_not_clip_held_out_extrema() -> None:
@@ -227,6 +230,8 @@ def test_checkpoint_consuming_calibration_and_evaluation_stage(tmp_path: Path) -
     assert summary["interpretation"]["coverage"].startswith("empirical")
     assert summary["marginal_interval_metrics"]["count"] == len(split.test_indices)
     assert (tmp_path / "evaluation" / "COMPLETED.json").is_file()
+    assert (tmp_path / "evaluation" / "metrics.csv").is_file()
+    assert (tmp_path / "evaluation" / "stratified_intervals.csv").is_file()
     predictions = np.load(tmp_path / "evaluation" / "predictions.npz")
     assert set(predictions.files) == {
         "coordinates",

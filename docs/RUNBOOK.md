@@ -39,6 +39,21 @@ attempt name so the earlier run remains intact:
 PYTHONPATH=src python -m inr_isr_4d.runner MANIFEST all --case-id CASE_ID --restart --attempt-id restart-01
 ```
 
+Explicit command-line overrides are applied only when supplied. Zero is a valid
+seed, and every `--set` value is parsed as JSON before strict configuration
+validation:
+
+```bash
+PYTHONPATH=src python -m inr_isr_4d.runner MANIFEST all --case-id CASE_ID --seed 0 --set runtime.device='"cuda"' --set collocation.pool_size=250000
+```
+
+Collocation bounds are normalized four-vectors in `(x, y, z, t)` order and may be
+restricted within the training-defined `[-1, 1]` coordinate domain:
+
+```bash
+PYTHONPATH=src python -m inr_isr_4d.runner MANIFEST all --dry-run --set 'collocation.domain_lower=[-0.8,-1.0,-1.0,-1.0]' --set 'collocation.domain_upper=[0.8,1.0,1.0,1.0]'
+```
+
 ## Dry-run contract
 
 `--dry-run` reads and validates configurations, inspects actual HDF5 metadata,

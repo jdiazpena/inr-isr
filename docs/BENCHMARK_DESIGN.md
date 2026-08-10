@@ -66,6 +66,14 @@ Every template is repeated for seeds 0, 1, and 2 through deterministic manifest
 expansion. No unrelated Cartesian product of available configuration knobs is
 created.
 
+The scientifically matched baseline for the implemented 4D derivative-prior study
+is the 4D data-only model under the same observations, split, architecture, seed,
+and evaluation code. The copied working 3D code remains an operational compatibility
+baseline, but it is not silently treated as a matched dimensional comparator because
+its historical experiments use a different data contract. Consequently, this study
+can test whether derivative-regularized 4D improves over data-only 4D; it cannot by
+itself support a claim that 4D is superior to a separately trained 3D model.
+
 ## Interpretation gates
 
 A derivative-prior reduction is not scientific success by itself. Synthetic claims

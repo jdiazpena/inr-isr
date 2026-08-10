@@ -24,10 +24,23 @@ from inr_isr_4d.config import (
     RuntimeConfig,
 )
 from inr_isr_4d.controller import ReferenceRatioController
+from inr_isr_4d.constraints import ConstraintEvaluation
 from inr_isr_4d.data import AffineScaler, FieldBundle4D
 from inr_isr_4d.model import SIREN4D
 from inr_isr_4d.regularization import derivative_prior_4d
 from inr_isr_4d.training import TrainingProblem4D, resolve_device, train_4d
+
+
+class EngineeringOnlyConstraint:
+    """Engineering-only fake used to prove the future constraint interface."""
+
+    name = "test_only_output_energy"
+    version = "1"
+
+    def evaluate(self, model, normalized_coordinates, context):
+        assert context["coordinate_order"] == ("x", "y", "z", "t")
+        loss = 1.0e-7 * torch.mean(model(normalized_coordinates) ** 2)
+        return ConstraintEvaluation(loss=loss, diagnostics={"test_scale": 1.0e-7})
 
 
 def make_problem() -> TrainingProblem4D:
@@ -161,6 +174,25 @@ def test_interrupted_resume_matches_uninterrupted_training(tmp_path: Path) -> No
     }
     completion = json.loads((tmp_path / "resumed" / "COMPLETED.json").read_text())
     assert completion["status"] == "complete" and completion["steps_completed"] == 6
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "resumed" / "history.jsonl").read_text().splitlines()
+    ]
+    assert all(record["timestamp_utc"].endswith("+00:00") for record in records)
+    uninterrupted_records = [
+        json.loads(line)
+        for line in (tmp_path / "uninterrupted" / "history.jsonl").read_text().splitlines()
+    ]
+    assert records[-1]["diagnostic_probe"] == uninterrupted_records[-1]["diagnostic_probe"]
+    assert records[-1]["derivative_health"] == uninterrupted_records[-1]["derivative_health"]
+    assert all(
+        set(record) >= {
+            "base_component_weights",
+            "target_reference_ratios",
+            "observed_weighted_to_data_ratios",
+        }
+        for record in records
+    )
 
 
 def test_collision_refusal_preserves_existing_run(tmp_path: Path) -> None:
@@ -171,3 +203,21 @@ def test_collision_refusal_preserves_existing_run(tmp_path: Path) -> None:
     with pytest.raises(FileExistsError):
         train_4d(make_problem(), make_config(num_steps=1, derivative=False), output)
     assert sentinel.read_text() == "historical"
+
+
+def test_future_constraint_interface_is_wired_without_claiming_physics(tmp_path: Path) -> None:
+    result = train_4d(
+        make_problem(),
+        make_config(num_steps=2, derivative=False),
+        tmp_path / "constraint",
+        additional_constraints=[EngineeringOnlyConstraint()],
+    )
+    checkpoint = torch.load(result.output_directory / "checkpoint.pt", weights_only=False)
+    assert checkpoint["additional_constraints"] == [
+        {"name": "test_only_output_energy", "version": "1"}
+    ]
+    records = [
+        json.loads(line)
+        for line in (result.output_directory / "history.jsonl").read_text().splitlines()
+    ]
+    assert records[-1]["additional_constraint_losses"]["test_only_output_energy"] > 0

@@ -7,9 +7,11 @@ import os
 import random
 import resource
 import time
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from collections.abc import Sequence
 
 import numpy as np
 import torch
@@ -18,6 +20,7 @@ from .checkpoint import atomic_json_save, atomic_torch_save, capture_rng_state, 
 from .collocation import CollocationPool4D, make_collocation_pool
 from .config import FourDConfig
 from .controller import ReferenceRatioController
+from .constraints import Constraint4D, constraint_identities, evaluate_constraint
 from .data import AffineScaler, FieldBundle4D
 from .model import SIREN4D
 from .regularization import PhysicalCoordinateScale, derivative_prior_4d, second_derivatives_4d
@@ -94,6 +97,8 @@ def _pool_for_step(
         seed=config.collocation.seed + generation,
         data_coordinates=train_coordinates,
         support_oversample_factor=config.collocation.support_oversample_factor,
+        domain_lower=config.collocation.domain_lower,
+        domain_upper=config.collocation.domain_upper,
     )
 
 
@@ -136,6 +141,7 @@ def _checkpoint_state(
     problem: TrainingProblem4D,
     config: FourDConfig,
     controller: ReferenceRatioController,
+    additional_constraints: tuple[Constraint4D, ...],
 ) -> dict[str, Any]:
     return {
         "schema_version": 1,
@@ -150,6 +156,7 @@ def _checkpoint_state(
         },
         "splits": problem.split_state,
         "adaptive_controller": controller.state_dict(),
+        "additional_constraints": constraint_identities(additional_constraints),
         "resolved_config": config.to_dict(),
         "rng": capture_rng_state(),
     }
@@ -163,6 +170,7 @@ def train_4d(
     resume: bool = False,
     restart: bool = False,
     stop_after_steps: int | None = None,
+    additional_constraints: Sequence[Constraint4D] = (),
 ) -> TrainingResult4D:
     """Train or genuinely resume one 4D model.
 
@@ -171,6 +179,8 @@ def train_4d(
     """
 
     config.validate()
+    constraints = tuple(additional_constraints)
+    identities = constraint_identities(constraints)
     output_directory = Path(output_directory)
     checkpoint_path = output_directory / "checkpoint.pt"
     completion_path = output_directory / "COMPLETED.json"
@@ -226,6 +236,8 @@ def train_4d(
             "targets": problem.target_scaler.state_dict(),
         }:
             raise ValueError("Preprocessing state differs from the checkpoint.")
+        if state.get("additional_constraints", []) != identities:
+            raise ValueError("Additional constraint identities differ from the checkpoint.")
         model.load_state_dict(state["model"])
         optimizer.load_state_dict(state["optimizer"])
         controller.load_state_dict(state["adaptive_controller"])
@@ -252,9 +264,13 @@ def train_4d(
         end_step = min(end_step, start_step + stop_after_steps)
 
     started = time.monotonic()
-    last_pool_generation: int | None = None
-    pool: CollocationPool4D | None = None
-    probe: torch.Tensor | None = None
+    # Always derive diagnostics from collocation generation zero. Reconstructing
+    # this probe deterministically on resume preserves comparability without
+    # storing a potentially large logical pool in the checkpoint.
+    pool: CollocationPool4D | None = _pool_for_step(config, train_coordinates, 0)
+    last_pool_generation: int | None = 0
+    probe_count = min(config.runtime.diagnostic_probe_size, len(pool))
+    probe = pool.sample(probe_count, step=1_000_003).to(device=device, dtype=dtype)
     use_amp = config.runtime.amp
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     physical = _physical_scale(problem) if config.derivative_prior.coordinate_convention == "physical" else None
@@ -263,8 +279,6 @@ def train_4d(
         generation = 0 if config.collocation.resample_every == 0 else step // config.collocation.resample_every
         if pool is None or generation != last_pool_generation:
             pool = _pool_for_step(config, train_coordinates, step)
-            probe_count = min(config.runtime.diagnostic_probe_size, len(pool))
-            probe = pool.sample(probe_count, step=1_000_003).to(device=device, dtype=dtype)
             last_pool_generation = generation
 
         indices = _batch_indices(
@@ -282,10 +296,17 @@ def train_4d(
 
         raw_components = {"horizontal": 0.0, "vertical": 0.0, "temporal": 0.0}
         prior_value = 0.0
+        constraint_values = {identity["name"]: 0.0 for identity in identities}
         active_weights = dict(controller.weights)
-        if config.derivative_prior.mode != "none" and config.derivative_prior.weight > 0:
+        derivative_active = (
+            config.derivative_prior.mode != "none" and config.derivative_prior.weight > 0
+        )
+        collocation = None
+        if derivative_active or constraints:
             assert pool is not None
             collocation = pool.sample(config.collocation.batch_size, step=step).to(device=device, dtype=dtype)
+        if derivative_active:
+            assert collocation is not None
             total_count = len(collocation)
             micro = config.collocation.derivative_microbatch_size
             for begin in range(0, total_count, micro):
@@ -308,6 +329,29 @@ def train_4d(
                 raw_components["vertical"] += fraction * float(details["vertical"].detach().cpu())
                 raw_components["temporal"] += fraction * float(details["tt"].detach().cpu())
 
+        if constraints:
+            assert collocation is not None
+            total_count = len(collocation)
+            micro = config.collocation.derivative_microbatch_size
+            for begin in range(0, total_count, micro):
+                points = collocation[begin : begin + micro]
+                fraction = len(points) / total_count
+                for constraint in constraints:
+                    result = evaluate_constraint(
+                        constraint,
+                        model,
+                        points,
+                        {
+                            "step": step,
+                            "coordinate_order": ("x", "y", "z", "t"),
+                            "coordinate_convention": config.derivative_prior.coordinate_convention,
+                        },
+                    )
+                    scaler.scale(fraction * result.loss).backward()
+                    constraint_values[constraint.name] += fraction * float(
+                        result.loss.detach().cpu()
+                    )
+
         scaler.unscale_(optimizer)
         gradient_norm = float(torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=float("inf")).cpu())
         scaler.step(optimizer)
@@ -319,7 +363,6 @@ def train_4d(
         next_step = step + 1
         should_record = next_step % config.runtime.history_every == 0 or next_step == end_step
         if should_record:
-            assert probe is not None
             health = (
                 _derivative_health(model, probe, physical)
                 if config.derivative_prior.mode != "none"
@@ -336,13 +379,39 @@ def train_4d(
             _append_jsonl(
                 output_directory / "history.jsonl",
                 {
+                    "timestamp_utc": datetime.now(timezone.utc).isoformat(),
                     "step": next_step,
                     "data_loss": data_value,
                     "derivative_prior_loss": prior_value,
+                    "additional_constraint_losses": constraint_values,
                     "raw_components": raw_components,
                     "active_component_weights": active_weights,
+                    "base_component_weights": {
+                        "horizontal": config.derivative_prior.horizontal_component_weight,
+                        "vertical": config.derivative_prior.vertical_component_weight,
+                        "temporal": config.derivative_prior.temporal_component_weight,
+                    },
+                    "target_reference_ratios": {
+                        "horizontal": config.derivative_prior.target_horizontal_ratio,
+                        "vertical": config.derivative_prior.target_vertical_ratio,
+                        "temporal": config.derivative_prior.target_temporal_ratio,
+                    },
+                    "observed_weighted_to_data_ratios": {
+                        name: (
+                            config.derivative_prior.weight
+                            * active_weights[name]
+                            * raw_components[name]
+                            / max(data_value, config.derivative_prior.epsilon)
+                        )
+                        for name in ("horizontal", "vertical", "temporal")
+                    },
                     "gradient_norm": gradient_norm,
                     "derivative_health": health,
+                    "diagnostic_probe": {
+                        "source_collocation_generation": 0,
+                        "sample_step": 1_000_003,
+                        "count": probe_count,
+                    },
                     "elapsed_seconds": time.monotonic() - started,
                     "memory": memory,
                 },
@@ -358,6 +427,7 @@ def train_4d(
                     problem=problem,
                     config=config,
                     controller=controller,
+                    additional_constraints=constraints,
                 ),
                 checkpoint_path,
             )
@@ -368,6 +438,7 @@ def train_4d(
             {
                 "schema_version": 1,
                 "status": "complete",
+                "completed_at_utc": datetime.now(timezone.utc).isoformat(),
                 "steps_completed": end_step,
                 "checkpoint": checkpoint_path.name,
                 "best_data_loss": best_data_loss,

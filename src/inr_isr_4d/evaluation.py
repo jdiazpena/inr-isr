@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import csv
 import json
 import os
 import tempfile
@@ -125,6 +126,40 @@ def _atomic_npz(path: Path, **arrays: np.ndarray) -> None:
         os.replace(temporary_name, path)
     finally:
         Path(temporary_name).unlink(missing_ok=True)
+
+
+def _atomic_csv(path: Path, fieldnames: list[str], rows: list[dict[str, object]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+        os.replace(temporary_name, path)
+    finally:
+        Path(temporary_name).unlink(missing_ok=True)
+
+
+def _write_metric_tables(summary: dict[str, Any], output_directory: Path) -> None:
+    metric_rows = []
+    for family in ("point_metrics_log10_density", "marginal_interval_metrics"):
+        for metric, value in summary[family].items():
+            metric_rows.append({"family": family, "metric": metric, "value": value})
+    _atomic_csv(
+        output_directory / "metrics.csv",
+        ["family", "metric", "value"],
+        metric_rows,
+    )
+    strata_rows = []
+    for stratum, groups in summary["stratified_interval_metrics"].items():
+        for group, metrics in groups.items():
+            strata_rows.append({"stratum": stratum, "group": group, **metrics})
+    _atomic_csv(
+        output_directory / "stratified_intervals.csv",
+        ["stratum", "group", "count", "empirical_coverage", "mean_width", "median_width"],
+        strata_rows,
+    )
 
 
 def _validate_checkpoint_contract(
@@ -271,6 +306,7 @@ def evaluate_checkpoint(
         },
     }
     atomic_json_save(summary, output_directory / "evaluation_summary.json")
+    _write_metric_tables(summary, output_directory)
     _atomic_npz(
         output_directory / "predictions.npz",
         coordinates=test_bundle.coordinates,
@@ -291,6 +327,8 @@ def evaluate_checkpoint(
             "model_identity": model_identity,
             "summary": "evaluation_summary.json",
             "predictions": "predictions.npz",
+            "metric_table": "metrics.csv",
+            "stratified_table": "stratified_intervals.csv",
         },
         output_directory / "COMPLETED.json",
     )
@@ -408,6 +446,7 @@ def calibrate_and_evaluate(
         },
     }
     atomic_json_save(summary, output_directory / "evaluation_summary.json")
+    _write_metric_tables(summary, output_directory)
     _atomic_npz(
         output_directory / "predictions.npz",
         coordinates=test_bundle.coordinates,
@@ -428,6 +467,8 @@ def calibrate_and_evaluate(
             "model_identity": model_identity,
             "summary": "evaluation_summary.json",
             "predictions": "predictions.npz",
+            "metric_table": "metrics.csv",
+            "stratified_table": "stratified_intervals.csv",
         },
         output_directory / "COMPLETED.json",
     )

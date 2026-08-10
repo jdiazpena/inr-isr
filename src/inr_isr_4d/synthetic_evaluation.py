@@ -145,6 +145,9 @@ def evaluate_independent_synthetic_truth(
         "relative_linear_density": _relative_metrics(prediction_linear, truth_linear),
         "analytic_first_derivative_metrics": derivative_metrics,
         "midpoint_truth_role": "separate temporal-smearing reference; not substituted for the integration-product target",
+        "temporal_smearing_log10": point_metrics(
+            truth["instantaneous_log10_Ne"][:, None], truth_log
+        ),
     }
     output_directory.mkdir(parents=True, exist_ok=False)
     atomic_json_save(summary, output_directory / "summary.json")
@@ -152,8 +155,10 @@ def evaluate_independent_synthetic_truth(
         output_directory / "predictions.npz",
         coordinates=coordinates,
         truth_log10_ne=truth_log,
+        instantaneous_midpoint_truth_log10_ne=truth["instantaneous_log10_Ne"][:, None],
         prediction_log10_ne=prediction_log,
         truth_ne_m3=truth_linear,
+        instantaneous_midpoint_truth_ne_m3=truth["instantaneous_Ne"][:, None],
         prediction_ne_m3=prediction_linear,
         truth_log10_derivatives=np.concatenate(truth_derivatives, axis=1),
         prediction_log10_derivatives=prediction_derivatives,

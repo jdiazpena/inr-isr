@@ -60,6 +60,12 @@ class CollocationConfig:
     resample_every: int = 0
     seed: int = 0
     support_oversample_factor: int = 4
+    domain_lower: tuple[float, float, float, float] = (-1.0, -1.0, -1.0, -1.0)
+    domain_upper: tuple[float, float, float, float] = (1.0, 1.0, 1.0, 1.0)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "domain_lower", tuple(float(value) for value in self.domain_lower))
+        object.__setattr__(self, "domain_upper", tuple(float(value) for value in self.domain_upper))
 
     def validate(self) -> None:
         if self.mode not in {"data_coordinates", "sobol", "support_aware"}:
@@ -73,6 +79,11 @@ class CollocationConfig:
             raise ValueError("derivative_microbatch_size cannot exceed collocation batch_size.")
         if self.resample_every < 0 or self.seed < 0 or self.support_oversample_factor < 1:
             raise ValueError("Collocation interval/seed/factor values are invalid.")
+        if len(self.domain_lower) != 4 or len(self.domain_upper) != 4:
+            raise ValueError("Collocation domain bounds must each contain four values in x, y, z, t order.")
+        for lower, upper in zip(self.domain_lower, self.domain_upper):
+            if not math.isfinite(lower) or not math.isfinite(upper) or not -1.0 <= lower < upper <= 1.0:
+                raise ValueError("Each normalized collocation bound must satisfy -1 <= lower < upper <= 1.")
 
 
 @dataclass(frozen=True)
