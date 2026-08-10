@@ -125,7 +125,15 @@ def derivative_prior_4d(
     )
 
     if mode == "legacy_diagonal_4d":
-        total = components["xx"] + components["yy"] + components["zz_quadratic"] + components["tt"]
+        horizontal = components["xx"] + components["yy"]
+        vertical = components["zz_quadratic"]
+        total = (
+            weight_horizontal * horizontal
+            + weight_vertical * vertical
+            + weight_temporal * components["tt"]
+        )
+        components["horizontal"] = horizontal
+        components["vertical"] = vertical
     elif mode == "anisotropic_huber_4d":
         horizontal = components["xx"] + 2.0 * components["xy"] + components["yy"]
         total = (
@@ -134,6 +142,7 @@ def derivative_prior_4d(
             + weight_temporal * components["tt"]
         )
         components["horizontal"] = horizontal
+        components["vertical"] = components["zz_huber"]
     elif mode == "spatial_hessian_3d":
         spatial = (
             components["xx"]
@@ -145,6 +154,8 @@ def derivative_prior_4d(
         )
         total = weight_horizontal * spatial + weight_temporal * components["tt"]
         components["spatial_hessian"] = spatial
+        components["horizontal"] = spatial
+        components["vertical"] = torch.zeros_like(spatial)
     else:
         raise ValueError(f"Unknown derivative-prior mode: {mode}")
     components["total"] = total

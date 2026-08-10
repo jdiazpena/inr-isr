@@ -84,6 +84,19 @@ class DerivativePriorConfig:
     temporal_component_weight: float = 1.0
     huber_delta_vertical: float = 0.1
     coordinate_convention: str = "normalized"
+    adaptive: bool = False
+    target_horizontal_ratio: float = 0.30
+    target_vertical_ratio: float = 0.30
+    target_temporal_ratio: float = 0.30
+    ema_beta: float = 0.99
+    epsilon: float = 1.0e-12
+    smoothing: float = 0.05
+    update_every: int = 10
+    warmup_steps: int = 100
+    ramp_steps: int = 1000
+    freeze_after_step: int = 0
+    component_weight_min: float = 0.0
+    component_weight_max: float = 1.0e6
 
     def validate(self) -> None:
         valid_modes = {
@@ -106,6 +119,23 @@ class DerivativePriorConfig:
         _finite_positive(self.huber_delta_vertical, "huber_delta_vertical")
         if self.mode == "none" and self.weight != 0:
             raise ValueError("Derivative-prior weight must be zero when mode is none.")
+        for name in (
+            "target_horizontal_ratio",
+            "target_vertical_ratio",
+            "target_temporal_ratio",
+            "epsilon",
+            "component_weight_min",
+            "component_weight_max",
+        ):
+            _finite_positive(float(getattr(self, name)), name, allow_zero=name != "epsilon")
+        if not 0 <= self.ema_beta < 1 or not 0 < self.smoothing <= 1:
+            raise ValueError("ema_beta must be in [0,1) and smoothing in (0,1].")
+        if self.update_every <= 0 or min(self.warmup_steps, self.ramp_steps, self.freeze_after_step) < 0:
+            raise ValueError("Adaptive-controller intervals cannot be invalid or negative.")
+        if self.component_weight_max < self.component_weight_min:
+            raise ValueError("component_weight_max must be at least component_weight_min.")
+        if self.adaptive and (self.mode == "none" or self.weight == 0):
+            raise ValueError("Adaptive weighting requires an active nonzero derivative prior.")
 
 
 @dataclass(frozen=True)
@@ -115,6 +145,8 @@ class RuntimeConfig:
     amp: bool = False
     inference_chunk_size: int = 65_536
     diagnostic_probe_size: int = 4096
+    history_every: int = 1
+    checkpoint_every: int = 1000
 
     def validate(self) -> None:
         if not (
@@ -126,7 +158,12 @@ class RuntimeConfig:
             raise ValueError("precision must be float32 or float64.")
         if self.amp and self.precision != "float32":
             raise ValueError("AMP is only supported with the float32 policy.")
-        if self.inference_chunk_size <= 0 or self.diagnostic_probe_size <= 0:
+        if min(
+            self.inference_chunk_size,
+            self.diagnostic_probe_size,
+            self.history_every,
+            self.checkpoint_every,
+        ) <= 0:
             raise ValueError("Runtime chunk/probe sizes must be positive.")
 
 
