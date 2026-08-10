@@ -1,0 +1,1253 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{hyperref}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  citecolor=blue,
+  urlcolor=blue
+}
+
+\newcommand{\Ne}{N_{\mathrm e}}
+\newcommand{\Te}{T_{\mathrm e}}
+\newcommand{\Ti}{T_{\mathrm i}}
+\newcommand{\Vi}{V_{\mathrm i}}
+\newcommand{\vlos}{v_{\mathrm{los}}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\dd}{\mathrm{d}}
+\newcommand{\kmps}{\mathrm{km\,s^{-1}}}
+\newcommand{\mps}{\mathrm{m\,s^{-1}}}
+
+\title{Research Plan for Uncertainty-Aware INR Reconstruction of Multi-Beam ISR Plasma Fields}
+\author{Prepared for the UAI PostDoc INR--Radar Project}
+\date{July 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This document consolidates the current state of the implicit neural representation (INR) radar
+project, the synthetic-data results obtained so far, the proposal commitments, and a recommended
+research plan for the next stage. The central objective is to reconstruct continuous ionospheric
+plasma fields from sparse multi-beam incoherent scatter radar (ISR) products while providing
+explicit reliability maps. The proposed path remains deliberately outside a full physics-informed
+neural network (PINN): physical knowledge enters as uncertainty-aware likelihoods, anisotropic
+soft priors, geometry-aware support diagnostics, integration-time-aware synthetic tests, and
+calibrated reliability products. A key addition in this version is that integration time must be
+treated as a first-order experimental axis. For fast plasma motion, one-minute, two-minute,
+five-minute, and ten-minute products are not merely different cadences; they represent different
+time-averaged measurements of a moving field and can therefore contain motion blur and
+stationarity errors.
+\end{abstract}
+
+\tableofcontents
+
+\section{Executive Summary}
+
+The project should be framed as an uncertainty-aware continuous interpolation and reconstruction
+tool for ISR-derived plasma parameters. The tool should produce two coupled outputs:
+\begin{enumerate}[leftmargin=*]
+  \item a reconstructed field, initially $\log_{10}\Ne(x,y,t)$ and later
+  $\log_{10}\Ne(x,y,z,t)$, $\Te(x,y,z,t)$, and $\Ti(x,y,z,t)$;
+  \item a reliability layer that tells users where the reconstruction is data constrained,
+  weakly constrained, or prior dominated.
+\end{enumerate}
+
+The work so far supports the following conclusions.
+\begin{enumerate}[leftmargin=*]
+  \item A SIREN-like INR is a good baseline because it provides a differentiable continuous field
+  and meaningful derivatives \cite{Sitzmann2020SIREN}.
+  \item A pure data-only INR can fit sparse observations but may produce unsupported structure
+  and derivative artifacts between beams.
+  \item Moderate curvature regularization improved the synthetic reconstruction in the first
+  controlled sweep, while stronger regularization was not uniformly beneficial.
+  \item The current four-case regularization sweep is a pilot, not final evidence. A defensible
+  study requires a structured loss-weight protocol, multiple velocities, multiple integration
+  times, multiple beam counts, and withheld-beam/time validation.
+  \item Integration time must be included. At $2~\kmps$, a plasma feature moves $120~\mathrm{km}$
+  during a one-minute integration, $240~\mathrm{km}$ during two minutes, $600~\mathrm{km}$
+  during five minutes, and $1200~\mathrm{km}$ during ten minutes. These are not small
+  perturbations for the current synthetic domains.
+  \item Eleven-beam experiments should not be discarded. They are likely too sparse for uniformly
+  accurate reconstruction, but they are valuable stress tests for reliability maps. A successful
+  method should warn the user when the eleven-beam reconstruction is not trustworthy.
+\end{enumerate}
+
+The recommended next milestone is therefore an integration-aware synthetic benchmark:
+\begin{enumerate}[leftmargin=*]
+  \item beam counts: 42, 23, and 11;
+  \item velocities: $0$, $0.36$, $0.75$, $1.0$, $1.5$, $2.0$, and $3.0~\kmps$;
+  \item integration times: 1, 2, 5, and 10 minutes;
+  \item model families: baseline INR in $(x,y,t)$, velocity-aware co-moving INR, and later
+  full 4D INR;
+  \item reliability methods: MC dropout plus geometry/support features, and conformal prediction;
+  \item validation: dense synthetic truth, withheld beams, withheld times, regional metrics, and
+  interval coverage.
+\end{enumerate}
+
+\section{Project Contract from the Proposal}
+
+The UAI proposal frames the project as an uncertainty-aware reconstruction method for 4D
+ionospheric structure from sparse multi-beam radar data \cite{Diaz2026Proposal}. The core
+commitments are:
+\begin{enumerate}[leftmargin=*]
+  \item fit continuous neural fields for ISR-derived parameters such as $\Ne$, $\Te$, and $\Ti$;
+  \item use ISR-reported errors as heteroscedastic measurement noise;
+  \item add two interpretable soft priors: temporal continuity and anisotropic smoothness;
+  \item deliver reliability products that include an observability proxy;
+  \item validate using withheld-beam and withheld-time tests;
+  \item benchmark against interpolation and smoothing baselines.
+\end{enumerate}
+
+One update is recommended. The proposal mentions ensemble-style uncertainty in some places,
+but the current plan should not use ensembles as a main method. The uncertainty branch should be:
+\begin{enumerate}[leftmargin=*]
+  \item MC dropout plus geometry/support features \cite{Gal2016Dropout,KendallGal2017};
+  \item conformal prediction, especially normalized or group-conditioned conformal intervals
+  \cite{AngelopoulosBates2021,Romano2019CQR}.
+\end{enumerate}
+
+The revised project claim should be:
+\begin{quote}
+We reconstruct continuous ISR-derived plasma fields and provide calibrated reliability diagnostics
+that distinguish data-constrained interpolation from prior-dominated extrapolation.
+\end{quote}
+
+\section{Current Methodological Progress}
+
+\subsection{Data Representation}
+
+The current real-data branch uses sparse radar samples as coordinate-value pairs,
+\begin{equation}
+  \mathcal{D} = \{(x_i,y_i,t_i,u_i)\}_{i=1}^{N},
+  \qquad
+  u_i = \log_{10}\Ne{}_{i},
+\end{equation}
+where $(x,y)$ are horizontal coordinates, $t$ is time, and $u$ is log electron density.
+Coordinates and targets are normalized during training. The model is a coordinate-based neural
+field,
+\begin{equation}
+  f_{\theta}(x,y,t) \approx \log_{10}\Ne(x,y,t).
+\end{equation}
+
+The current implementation is not yet full $(x,y,z,t)$. It uses altitude-filtered slices, which is
+appropriate at this stage because it keeps the validation problem interpretable.
+
+\subsection{Baseline Architecture}
+
+The current baseline is a sine-activated MLP inspired by SIREN:
+\begin{equation}
+  h_{\ell} = \sin\left(\omega_{\ell}(W_{\ell}h_{\ell-1}+b_{\ell})\right).
+\end{equation}
+SIREN is attractive because it represents continuous fields and derivatives well
+\cite{Sitzmann2020SIREN}. This matters because the project evaluates first and second derivatives
+for regularization and diagnostics. A ReLU network would be poorly matched to second-derivative
+curvature penalties because its second derivatives are zero almost everywhere and undefined at
+kinks.
+
+\subsection{Current Loss}
+
+The current training objective is:
+\begin{equation}
+  \mathcal{L}
+  =
+  \mathcal{L}_{\mathrm{data}}
+  +
+  \lambda_{xy}\mathcal{L}_{xy}
+  +
+  \lambda_t\mathcal{L}_t.
+\end{equation}
+The data loss is currently MSE or synthetic MSE:
+\begin{equation}
+  \mathcal{L}_{\mathrm{data}}
+  =
+  \frac{1}{N}\sum_i
+  \left(f_{\theta}(x_i,y_i,t_i)-u_i\right)^2.
+\end{equation}
+
+The spatial term is a horizontal Hessian penalty:
+\begin{equation}
+  \mathcal{L}_{xy}
+  =
+  \E_{(x,y,t)\sim\Omega}
+  \left[
+    f_{xx}^2 + 2f_{xy}^2 + f_{yy}^2
+  \right].
+\end{equation}
+This is not the same as a Laplacian penalty $(f_{xx}+f_{yy})^2$. It penalizes curvature in all
+horizontal directions, including mixed curvature.
+
+The temporal term is:
+\begin{equation}
+  \mathcal{L}_{t}
+  =
+  \E_{(x,y,t)\sim\Omega}
+  \left[
+    f_{tt}^2
+  \right].
+\end{equation}
+This allows linear temporal trends but discourages rapid temporal bending.
+
+\subsection{Synthetic Validation Infrastructure}
+
+The synthetic branch was created because real radar data do not provide dense truth. The synthetic
+case allows the same INR training workflow to be tested against a known analytic plasma field.
+The completed progress includes:
+\begin{enumerate}[leftmargin=*]
+  \item synthetic moving-patch generator;
+  \item sparse radar-like observation geometries;
+  \item 42-beam and 23-beam sampling patterns;
+  \item data-only and regularized training cases;
+  \item derivative diagnostics even when regularization is disabled;
+  \item dense reconstruction analysis using the corrected reconstruction/error script;
+  \item regional error metrics: full domain, interior, near-observation, and high-gradient regions;
+  \item comparison plots and summary tables.
+\end{enumerate}
+
+\subsection{First Synthetic Sweep Results}
+
+The first controlled sweep used a moving Gaussian-like density patch at approximately
+$360~\mps$. The key cases were:
+\begin{enumerate}[leftmargin=*]
+  \item data-only;
+  \item moderate regularization: $\rho_{xy}=0.30$, $\rho_t=0.30$;
+  \item stronger spatial regularization: $\rho_{xy}=0.70$, $\rho_t=0.30$;
+  \item stronger spatial and temporal regularization: $\rho_{xy}=0.70$, $\rho_t=0.70$.
+\end{enumerate}
+
+The main finding was that moderate regularization was best overall in the first benchmark. It
+reduced artifacts and improved gradient recovery without over-smoothing as strongly as the higher
+regularization cases. The data-only run was competitive for scalar density in some high-gradient
+regions, but derivative recovery and artifact control were weaker. This supports the project
+hypothesis that priors are useful, but it does not yet prove that any particular weight is optimal.
+
+\section{Why Integration Time Must Be Included}
+
+\subsection{Cadence and Integration Time Are Different Concepts}
+
+ISR products commonly appear at integration times such as 1, 2, 5, and 10 minutes. It is tempting
+to treat these products as point samples at their timestamps. That is only approximately true when
+the plasma is slowly varying over the integration interval. For fast plasma flow, a radar product is
+better interpreted as a time-averaged measurement over a moving plasma field.
+
+Two time scales must be separated:
+\begin{enumerate}[leftmargin=*]
+  \item sampling interval or cadence, $\Delta t_{\mathrm{samp}}$: the time between successive records;
+  \item integration duration, $T_{\mathrm{int}}$: the time over which the measurement is accumulated.
+\end{enumerate}
+
+Often these are similar in processed products, but conceptually they have different effects.
+Cadence controls the displacement between frames. Integration duration controls motion blur within
+each frame.
+
+\subsection{Forward Model for Integrated Observations}
+
+An instantaneous synthetic observation would be:
+\begin{equation}
+  y_i = u(\mathbf{r}_i,t_i) + \epsilon_i,
+\end{equation}
+where $\mathbf{r}_i=(x_i,y_i,z_i)$ or $(x_i,y_i)$.
+
+An integration-aware observation should instead be:
+\begin{equation}
+  y_i
+  =
+  \frac{1}{T_{\mathrm{int}}}
+  \int_{t_i-T_{\mathrm{int}}/2}^{t_i+T_{\mathrm{int}}/2}
+  u(\mathbf{r}_i,\tau)\,\dd \tau
+  +
+  \epsilon_i.
+  \label{eq:integrated_observation}
+\end{equation}
+
+If the plasma field is a moving structure,
+\begin{equation}
+  u(\mathbf{r},t) = u_0(\mathbf{r}-\mathbf{v}t),
+\end{equation}
+then Eq.~\ref{eq:integrated_observation} is a convolution of the instantaneous structure with a
+line segment in the direction of motion. The measurement is not just noisy; it is blurred along
+the flow direction.
+
+\subsection{Motion Blur for a Gaussian Patch}
+
+For a Gaussian patch with horizontal covariance $\Sigma_0$ moving at velocity $\mathbf{v}$, a
+uniform integration interval approximately adds covariance along the direction of motion:
+\begin{equation}
+  \Sigma_{\mathrm{eff}}
+  \approx
+  \Sigma_0
+  +
+  \frac{T_{\mathrm{int}}^2}{12}
+  \mathbf{v}\mathbf{v}^{\top}.
+  \label{eq:motion_blur_covariance}
+\end{equation}
+This is the covariance of a Gaussian convolved with a uniform line segment. The important
+consequence is that motion blur is anisotropic and grows quadratically with integration time.
+
+\subsection{Dimensionless Severity Numbers}
+
+The synthetic benchmark should track dimensionless numbers rather than only raw velocities.
+Let $\ell$ be a characteristic spatial scale, such as patch width, beam spacing, or the smallest
+feature scale we expect to reconstruct. Define:
+\begin{align}
+  C_{\mathrm{samp}} &= \frac{\|\mathbf{v}\|\Delta t_{\mathrm{samp}}}{\ell},
+  \\
+  C_{\mathrm{int}} &= \frac{\|\mathbf{v}\|T_{\mathrm{int}}}{\ell}.
+\end{align}
+
+Interpretation:
+\begin{enumerate}[leftmargin=*]
+  \item $C_{\mathrm{samp}}\ll 1$: the feature moves little between records;
+  \item $C_{\mathrm{samp}}\sim 1$: the feature moves by about one feature width between records;
+  \item $C_{\mathrm{samp}}>1$: temporal interpolation becomes a tracking problem;
+  \item $C_{\mathrm{int}}\ll 1$: the integrated product is close to instantaneous;
+  \item $C_{\mathrm{int}}\sim 1$: the measurement is visibly motion blurred;
+  \item $C_{\mathrm{int}}>1$: a point-sample interpretation is physically questionable.
+\end{enumerate}
+
+\subsection{Displacements for Candidate Velocities and Integration Times}
+
+Table~\ref{tab:velocity_displacement} shows how far a structure moves during common ISR
+integration intervals. These values strongly argue for including integration time in the synthetic
+benchmark.
+
+\begin{longtable}{rrrrr}
+\caption{Horizontal displacement during integration for candidate synthetic velocities.}
+\label{tab:velocity_displacement}\\
+\toprule
+Velocity & 1 min & 2 min & 5 min & 10 min \\
+$(\kmps)$ & km & km & km & km \\
+\midrule
+\endfirsthead
+\toprule
+Velocity & 1 min & 2 min & 5 min & 10 min \\
+$(\kmps)$ & km & km & km & km \\
+\midrule
+\endhead
+0.00 & 0 & 0 & 0 & 0 \\
+0.36 & 21.6 & 43.2 & 108 & 216 \\
+0.75 & 45 & 90 & 225 & 450 \\
+1.00 & 60 & 120 & 300 & 600 \\
+1.50 & 90 & 180 & 450 & 900 \\
+2.00 & 120 & 240 & 600 & 1200 \\
+3.00 & 180 & 360 & 900 & 1800 \\
+\bottomrule
+\end{longtable}
+
+At $2~\kmps$, a 5-minute product averages over roughly $600~\mathrm{km}$ of motion. For many
+radar volumes this is not a detail; it changes the inverse problem. A 10-minute product at
+active-time velocities may be excellent for reducing stochastic fit uncertainty but poor for recovering
+instantaneous morphology.
+
+\subsection{Noise-Blur Tradeoff}
+
+Longer integration generally reduces stochastic measurement noise. A simple first-order rule is:
+\begin{equation}
+  \sigma_{\mathrm{stat}}(T_{\mathrm{int}})
+  \propto
+  \frac{1}{\sqrt{T_{\mathrm{int}}}}.
+\end{equation}
+But longer integration increases motion-induced model mismatch. A local first-order approximation
+is:
+\begin{equation}
+  \sigma_{\mathrm{motion}}^2
+  \approx
+  \frac{T_{\mathrm{int}}^2}{12}
+  \left(\mathbf{v}^{\top}\nabla u\right)^2.
+\end{equation}
+Therefore an effective uncertainty for fast-moving structures should include both:
+\begin{equation}
+  \sigma_{\mathrm{eff}}^2
+  =
+  \sigma_{\mathrm{fit}}^2
+  +
+  \sigma_{\mathrm{floor}}^2
+  +
+  \sigma_{\mathrm{motion}}^2
+  +
+  \sigma_{\mathrm{systematic}}^2.
+\end{equation}
+This expression should not be presented as final ISR theory yet. It is a practical synthetic and
+diagnostic model that prevents long-integration products from being treated as overconfident point
+measurements during active times.
+
+\section{Recommended Synthetic Velocity Suite}
+
+\subsection{Velocity Values}
+
+The next synthetic suite should include:
+\begin{equation}
+  \|\mathbf{v}\| \in
+  \{0,\;0.36,\;0.75,\;1.0,\;1.5,\;2.0,\;3.0\}~\kmps.
+\end{equation}
+
+Interpretation:
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Velocity & Purpose \\
+\midrule
+$0$ & static control \\
+$0.36~\kmps$ & quiet/moderate baseline, current case \\
+$0.75~\kmps$ & active but usually still trackable at short cadence \\
+$1.0~\kmps$ & strong convection \\
+$1.5~\kmps$ & active/storm-time stress \\
+$2.0~\kmps$ & severe active-time case \\
+$3.0~\kmps$ & out-of-distribution stress test \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+These values are also physically interpretable from the $\mathbf{E}\times\mathbf{B}$ drift scale.
+For a high-latitude magnetic field of order $B\sim 5\times 10^{-5}~\mathrm{T}$,
+\begin{equation}
+  v_E = \frac{E}{B}.
+\end{equation}
+Thus $E=50~\mathrm{mV\,m^{-1}}$ corresponds to approximately $1~\kmps$, and
+$E=100~\mathrm{mV\,m^{-1}}$ corresponds to approximately $2~\kmps$. Such values are not
+quiet-time values, but they are appropriate stress cases for active high-latitude convection
+\cite{Kelley2009,Greenwald1995SuperDARN,Chisham2007SuperDARN}.
+
+\subsection{Velocity Directions}
+
+Do not use only one direction. Use a small set of directions:
+\begin{equation}
+  \phi \in \{0^\circ,\;45^\circ,\;90^\circ,\;135^\circ\},
+\end{equation}
+or align directions relative to the radar beam fan:
+\begin{enumerate}[leftmargin=*]
+  \item along the densest beam fan;
+  \item across the beam fan;
+  \item diagonal to the beam geometry;
+  \item approximately field-aligned projection if magnetic coordinates are introduced.
+\end{enumerate}
+
+The same speed can be easy or hard depending on whether the structure moves along well-sampled
+directions or through gaps between beams.
+
+\section{Beam Count Strategy}
+
+The current synthetic work includes 42-beam and 23-beam cases. An 11-beam case should be added,
+but it should be interpreted correctly.
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Beam count & Role & Expected outcome \\
+\midrule
+42 & optimistic/method-development case & should reconstruct moderate motion well \\
+23 & realistic sparse benchmark & main scientific benchmark \\
+11 & stress/failure case & should expose low-reliability regions \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The 11-beam case may indeed be too sparse for strong reconstruction. That is not a reason to omit
+it. The final tool must be able to tell a user when an interpolated field is not trustworthy. If an
+11-beam high-speed case produces a visually smooth reconstruction but the reliability layer correctly
+marks large regions as unreliable, that is a project success.
+
+\section{Synthetic Experiment Matrix}
+
+\subsection{Stage 1: Manageable Core Matrix}
+
+A full factorial sweep over velocity, direction, integration time, beam count, architecture, and loss
+weights would become too large. The first serious matrix should be:
+\begin{enumerate}[leftmargin=*]
+  \item beam counts: 42, 23, 11;
+  \item velocities: $0.36$, $1.0$, $2.0~\kmps$;
+  \item integration times: 1, 2, 5, 10 minutes;
+  \item direction: one standard direction, preferably the current direction;
+  \item regularization: data-only, moderate baseline, and selected stronger case.
+\end{enumerate}
+
+This is already:
+\[
+  3 \times 3 \times 4 \times 3 = 108
+\]
+training conditions if all are run. If runtime is high, reduce Stage 1 to:
+\[
+  \mathrm{beams}\in\{42,23,11\},\quad
+  v\in\{0.36,1.0,2.0\},\quad
+  T_{\mathrm{int}}\in\{1,5,10\},
+\]
+with only the moderate regularization setting and a data-only control for selected cases.
+
+\subsection{Stage 2: Directional Stress}
+
+After Stage 1, fix the most informative speeds, probably $1.0$ and $2.0~\kmps$, and test
+several directions. This tells us whether performance is controlled by speed alone or by
+speed relative to beam geometry.
+
+\subsection{Stage 3: Velocity-Aware Models}
+
+Compare:
+\begin{enumerate}[leftmargin=*]
+  \item standard INR:
+  \[
+    f_{\theta}(x,y,t);
+  \]
+  \item co-moving coordinate INR:
+  \[
+    f_{\theta}(x-u_x t,\; y-u_y t,\; t);
+  \]
+  \item weak advection diagnostic, not yet a training loss:
+  \[
+    r_{\mathrm{adv}} = f_t + u_x f_x + u_y f_y.
+  \]
+\end{enumerate}
+
+The co-moving coordinate version is recommended before an advection residual loss because it is
+still an interpolation representation rather than a PDE-constrained PINN. If an advection residual
+is later used, it should be presented as a diagnostic or a soft transport prior, not as a full
+physical model.
+
+\section{Using Line-of-Sight Velocities}
+
+Radar products include line-of-sight velocity. These should be used, but carefully.
+
+\subsection{Synthetic Velocity Generation}
+
+For synthetic data, define a true horizontal velocity:
+\begin{equation}
+  \mathbf{v}_{h} = (u_x,u_y).
+\end{equation}
+For beam unit vector $\hat{\mathbf{b}}_j$, the synthetic line-of-sight velocity is:
+\begin{equation}
+  \vlos^{(j)}
+  =
+  \mathbf{v}_{h}\cdot \hat{\mathbf{b}}_{h}^{(j)}
+  +
+  \epsilon_v,
+\end{equation}
+where $\hat{\mathbf{b}}_{h}^{(j)}$ is the horizontal projection of the beam direction. This allows
+the synthetic benchmark to include realistic velocity observations without pretending that every
+beam directly measures the full horizontal vector.
+
+\subsection{First Real-Data Use}
+
+For real data, the first use of $\vlos$ should be conservative:
+\begin{enumerate}[leftmargin=*]
+  \item use $\vlos$ as a speed/activity proxy;
+  \item use it to flag intervals where long integration times may be motion blurred;
+  \item use it as an input feature or reliability feature;
+  \item use it to estimate $\sigma_{\mathrm{motion}}$;
+  \item avoid claiming a full vector velocity field from monostatic LOS data without additional
+  assumptions.
+\end{enumerate}
+
+Later, a smoothed horizontal velocity field can be estimated from multiple beams or external
+context, but that should be a separate methodological step.
+
+\section{ISR Uncertainty and Error Modeling}
+
+\subsection{Formal Fit Errors}
+
+The ISR error document emphasizes that reported variables such as $d\Ne$, $d\Te$, $d\Ti$, and
+$d\Vi$ are formal fitting uncertainties, not total truth errors \cite{Diaz2026ISRError}. They are
+derived from the nonlinear spectral fitting problem and reflect the local posterior covariance under
+the assumed forward model \cite{Lehtinen1986,LehtinenHuuskonen1996,Virtanen2008,Virtanen2021}.
+
+For a transformed target $u=\log_{10}\Ne$, the uncertainty should be transformed as:
+\begin{equation}
+  \sigma_u
+  \approx
+  \frac{\sigma_{\Ne}}{\ln(10)\Ne}.
+\end{equation}
+
+\subsection{Heteroscedastic Data Loss}
+
+The data loss should become:
+\begin{equation}
+  \mathcal{L}_{\mathrm{data},\sigma}
+  =
+  \frac{1}{N}
+  \sum_{i=1}^{N}
+  \frac{
+    \left(f_{\theta}(\mathbf{x}_i,t_i)-u_i\right)^2
+  }{
+    \sigma_{\mathrm{eff},i}^2
+  }.
+\end{equation}
+
+The effective uncertainty should include a floor:
+\begin{equation}
+  \sigma_{\mathrm{eff},i}
+  =
+  \max(\sigma_{u,i},\sigma_{\mathrm{floor}}),
+\end{equation}
+or a richer expression:
+\begin{equation}
+  \sigma_{\mathrm{eff},i}^2
+  =
+  \sigma_{u,i}^2
+  +
+  \sigma_{\mathrm{floor}}^2
+  +
+  \sigma_{\mathrm{motion},i}^2
+  +
+  \sigma_{\mathrm{support},i}^2.
+\end{equation}
+
+\subsection{Normalized Residual Diagnostics}
+
+Use:
+\begin{equation}
+  z_i =
+  \frac{
+    f_{\theta}(\mathbf{x}_i,t_i)-u_i
+  }{
+    \sigma_{\mathrm{eff},i}
+  }.
+\end{equation}
+Then track:
+\begin{equation}
+  \chi^2_{\nu}
+  \approx
+  \frac{1}{N}
+  \sum_i z_i^2.
+\end{equation}
+Values near one indicate rough consistency if the error model is appropriate. Values much larger
+than one suggest under-estimated uncertainty or model mismatch. Values much smaller than one
+suggest over-estimated uncertainty or over-smoothed predictions.
+
+\subsection{Systematic Effects Not Captured by Formal Error Bars}
+
+Formal fit uncertainties do not fully capture:
+\begin{enumerate}[leftmargin=*]
+  \item ion composition assumptions;
+  \item non-Maxwellian distributions;
+  \item beam-to-beam calibration bias;
+  \item range-lag ambiguity and range mixing;
+  \item velocity shear during integration;
+  \item low-elevation gain/SNR degradation;
+  \item I/Q and processing artifacts;
+  \item temporal nonstationarity during integration.
+\end{enumerate}
+These should feed the reliability map even when they are not included directly in training.
+
+\section{Anisotropy and the Vertical Dimension}
+
+\subsection{Horizontal and Vertical Directions Should Differ}
+
+The vertical coordinate $z$ should not be treated as simply another horizontal coordinate. The
+ionosphere has strong vertical stratification, layer structure, scale-height behavior, composition
+transitions, and range ambiguity. Horizontal interpolation across sparse beams and vertical
+interpolation across range gates have different physical meanings.
+
+For full 4D reconstruction, use:
+\begin{equation}
+  f_{\theta}(x,y,z,t)
+  =
+  b_{\phi}(z,t)
+  +
+  r_{\theta}(x,y,z,t),
+\end{equation}
+where $b_{\phi}$ is a smooth background vertical profile and $r_{\theta}$ is a residual 4D INR.
+This decomposition gives the model a physically meaningful vertical baseline while allowing
+horizontal structure.
+
+\subsection{Anisotropic Curvature}
+
+The 4D loss should generalize to:
+\begin{equation}
+  \mathcal{L}
+  =
+  \mathcal{L}_{\mathrm{data},\sigma}
+  +
+  \lambda_{xy}\mathcal{L}_{xy}
+  +
+  \lambda_z\mathcal{L}_z
+  +
+  \lambda_t\mathcal{L}_t.
+\end{equation}
+The vertical penalty can be:
+\begin{equation}
+  \mathcal{L}_z
+  =
+  \E[f_{zz}^2],
+\end{equation}
+but for sharp layers a robust penalty should be tested:
+\begin{equation}
+  \mathcal{L}_z^{\mathrm{Huber}}
+  =
+  \E\left[\rho_{\delta}(f_{zz})\right],
+\end{equation}
+where $\rho_{\delta}$ is the Huber loss. Cauchy or total-variation-like penalties are also worth
+testing because full-profile ISR analysis and Bayesian inversion literature warns that stationary
+Tikhonov-type smoothing can suppress real sharp structures \cite{Diaz2026ISRError,Hansen1992LCurve}.
+
+\subsection{Magnetic Coordinates}
+
+For high-latitude data, geographic $(x,y,z)$ may not always be the best coordinate system.
+Potential future coordinate systems include:
+\begin{enumerate}[leftmargin=*]
+  \item geographic/cartesian coordinates;
+  \item magnetic apex coordinates;
+  \item coordinates decomposed into directions parallel and perpendicular to $\mathbf{B}$;
+  \item beam/range/time coordinates for data-ingest diagnostics.
+\end{enumerate}
+The EISCAT 3D uncertainty literature emphasizes the importance of geometry, viewing angle relative
+to the magnetic field, and experiment design \cite{Hatch2025E3D}.
+
+\section{Architecture Roadmap}
+
+\subsection{SIREN as the Main Baseline}
+
+SIREN remains the correct baseline because:
+\begin{enumerate}[leftmargin=*]
+  \item it maps coordinates to continuous values;
+  \item it can represent smooth fields and derivatives;
+  \item it works naturally with derivative regularization;
+  \item frequency scaling acts as a spectral prior.
+\end{enumerate}
+However, the SIREN frequency parameter $\omega_0$ must be treated as a hyperparameter and not
+as a universal constant.
+
+\subsection{FINER and FINER++}
+
+FINER and FINER++ introduce variable-periodic activation functions to tune spectral support more
+flexibly than standard SIREN \cite{Liu2023FINER,Zhu2024FINERPP}. These should be tested if:
+\begin{enumerate}[leftmargin=*]
+  \item low-frequency SIREN is too smooth;
+  \item high-frequency SIREN creates ringing;
+  \item one fixed $\omega_0$ cannot represent both smooth background and sharp structures.
+\end{enumerate}
+
+\subsection{K-Planes and Factorized 4D Representations}
+
+K-Planes factorizes high-dimensional fields into learned planes and is explicitly designed to move
+from static to dynamic scenes \cite{FridovichKeil2023KPlanes}. It is attractive for full
+$(x,y,z,t)$ reconstruction because it can make dimension-specific priors easier to implement. For
+example, temporal smoothness can be applied to time-containing planes and vertical priors can be
+separated from horizontal ones.
+
+\subsection{Hash or Grid Hybrid Representations}
+
+Multiresolution hash encodings can drastically accelerate neural field training
+\cite{Muller2022InstantNGP}. They should be considered if training cost becomes limiting.
+However, they may make derivative priors less clean, so they should not replace SIREN before
+the uncertainty-aware baseline is stable.
+
+\subsection{Radar Neural Fields}
+
+Radar-neural-field papers such as RF4D and SpINR are conceptually relevant because they show
+that radar-like data can be represented by neural fields \cite{RF4D2024,SpINR2024}. However,
+they are not directly equivalent to ISR plasma-parameter reconstruction. ISR products are fitted
+plasma parameters with formal uncertainties, not raw FMCW point clouds or automotive radar
+returns.
+
+\section{Loss-Weight Selection Protocol}
+
+\subsection{Why the Current Sweep Is Not Final}
+
+The four-case sweep is scientifically useful but not sufficient as final evidence. It showed that
+regularization matters and that stronger is not automatically better. A final study requires a
+structured selection protocol.
+
+\subsection{Recommended Weight Grid}
+
+Use target ratios rather than raw lambdas:
+\begin{equation}
+  \rho_{xy}
+  =
+  \frac{\lambda_{xy}\mathcal{L}_{xy}}
+  {\mathcal{L}_{\mathrm{data}}},
+  \qquad
+  \rho_t
+  =
+  \frac{\lambda_t\mathcal{L}_t}
+  {\mathcal{L}_{\mathrm{data}}}.
+\end{equation}
+
+Recommended first grid:
+\begin{equation}
+  \rho_{xy},\rho_t \in
+  \{0,\;0.05,\;0.1,\;0.3,\;0.7,\;1.0\}.
+\end{equation}
+
+Select weights by validation performance, not training loss. The primary selection metrics should
+be withheld-beam error, withheld-time error, high-gradient error, and calibration quality.
+
+\subsection{Adaptive Loss Balancing}
+
+Compare the fixed-ratio method with:
+\begin{enumerate}[leftmargin=*]
+  \item L-curve analysis for the data-fit/regularization tradeoff
+  \cite{Hansen1992LCurve};
+  \item GradNorm-style gradient balancing \cite{Chen2018GradNorm};
+  \item SoftAdapt-style loss-rate balancing \cite{Heydari2019SoftAdapt};
+  \item uncertainty weighting for multi-task losses \cite{Kendall2018MultiTask};
+  \item ReLoBRaLo-style balancing, used only as a multi-loss optimizer idea, not as a PINN
+  claim \cite{Bischof2021ReLoBRaLo};
+  \item gradient-flow diagnostics inspired by PINN loss pathology studies
+  \cite{Wang2021GradientPathologies}.
+\end{enumerate}
+
+The most defensible phrasing is:
+\begin{quote}
+We seek the smoothest and most reliable field whose uncertainty-normalized data misfit remains
+acceptable under withheld-beam and withheld-time validation.
+\end{quote}
+
+\section{Reliability Maps}
+
+\subsection{Reliability Is a Deliverable, Not a Decoration}
+
+The final tool should show both interpolation and reliability. A region marked unreliable is not a
+failure; it is valuable scientific information. The reliability map should warn users when the model
+is extrapolating across poorly observed space, long integration time, high motion, low SNR, or high
+dropout/conformal uncertainty.
+
+\subsection{MC Dropout Route}
+
+MC dropout provides stochastic forward passes:
+\begin{equation}
+  \{\hat{u}^{(m)}(\mathbf{x},t)\}_{m=1}^{M}.
+\end{equation}
+From these compute:
+\begin{align}
+  \mu(\mathbf{x},t) &= \frac{1}{M}\sum_m \hat{u}^{(m)}(\mathbf{x},t),\\
+  \sigma_{\mathrm{MC}}^2(\mathbf{x},t)
+  &=
+  \frac{1}{M-1}\sum_m
+  \left(\hat{u}^{(m)}(\mathbf{x},t)-\mu(\mathbf{x},t)\right)^2.
+\end{align}
+This is an epistemic uncertainty proxy \cite{Gal2016Dropout,KendallGal2017}.
+
+\subsection{Conformal Prediction Route}
+
+Conformal prediction wraps a trained model with calibrated intervals. For calibration samples,
+define a normalized score:
+\begin{equation}
+  s_i
+  =
+  \frac{
+    |u_i-\hat{u}_i|
+  }{
+    a_i
+  },
+\end{equation}
+where $a_i$ is a scale factor. For this project:
+\begin{equation}
+  a_i^2
+  =
+  \sigma_{\mathrm{ISR},i}^2
+  +
+  \sigma_{\mathrm{MC},i}^2
+  +
+  \sigma_{\mathrm{motion},i}^2
+  +
+  \sigma_{\mathrm{support},i}^2.
+\end{equation}
+Let $q_{1-\alpha}$ be the appropriate conformal quantile of the calibration scores. Then:
+\begin{equation}
+  \hat{u}(\mathbf{x},t)
+  \pm
+  q_{1-\alpha}a(\mathbf{x},t)
+\end{equation}
+is a calibrated prediction interval under the assumptions of the conformal split
+\cite{AngelopoulosBates2021,Romano2019CQR}.
+
+\subsection{Group-Conditioned Reliability}
+
+A single global interval may be misleading. Use bins or groups:
+\begin{enumerate}[leftmargin=*]
+  \item altitude range;
+  \item support distance;
+  \item beam elevation;
+  \item SNR or reported $\sigma$;
+  \item integration time;
+  \item velocity/motion-blur class;
+  \item interior vs boundary regions.
+\end{enumerate}
+This is similar in spirit to Mondrian or group-conditioned conformal prediction, and it helps ensure
+that high-confidence regions and weak-support regions are not averaged into one misleading
+calibration score.
+
+\subsection{Reliability Map Components}
+
+The reliability map should combine:
+\begin{enumerate}[leftmargin=*]
+  \item ISR aleatoric uncertainty;
+  \item MC dropout dispersion or conformal interval width;
+  \item distance to nearest measurement;
+  \item beam density/coverage;
+  \item beam-angle diversity;
+  \item integration-time motion blur;
+  \item window-overlap disagreement;
+  \item withheld-validation residual patterns;
+  \item quality flags and systematic-risk indicators.
+\end{enumerate}
+
+\section{Validation Design}
+
+\subsection{Synthetic Validation}
+
+Synthetic validation should include:
+\begin{enumerate}[leftmargin=*]
+  \item dense truth error;
+  \item gradient error;
+  \item high-gradient region error;
+  \item boundary vs interior error;
+  \item near-observation vs far-support error;
+  \item motion-speed and integration-time stratification;
+  \item beam-count stratification.
+\end{enumerate}
+
+\subsection{Real-Data Validation}
+
+Real-data validation should use:
+\begin{enumerate}[leftmargin=*]
+  \item random withheld points for debugging;
+  \item withheld range gates;
+  \item withheld altitude bands;
+  \item withheld time blocks;
+  \item withheld beams;
+  \item combined withheld beam/time stress tests.
+\end{enumerate}
+
+\subsection{Metrics}
+
+Report:
+\begin{enumerate}[leftmargin=*]
+  \item RMSE, MAE, bias, and 95th percentile absolute error;
+  \item normalized residuals and reduced chi-square-like metrics;
+  \item empirical coverage of nominal 50\%, 80\%, and 90\% intervals;
+  \item interval width;
+  \item coverage by altitude;
+  \item coverage by support-distance bin;
+  \item coverage by beam/elevation/SNR bin;
+  \item coverage by integration time and velocity class.
+\end{enumerate}
+
+\section{Recommended Final Tool}
+
+The final deliverable should be an interactive analysis tool, not only a training script. It should
+show:
+\begin{enumerate}[leftmargin=*]
+  \item reconstructed $\log_{10}\Ne$ slices;
+  \item later $\Te$ and $\Ti$ slices;
+  \item observed beam/range samples overlaid;
+  \item reliability map;
+  \item interval-width map;
+  \item support/observability map;
+  \item integration-time or motion-blur warning layer;
+  \item optional mask that hides low-reliability regions;
+  \item calibration summary, e.g. ``nominal 90\% interval achieved 87\% coverage on withheld
+  beams.''
+\end{enumerate}
+
+The most important user-interface principle is that unreliable regions should remain visible but
+clearly marked. The scientific value is not only in showing the interpolation, but in showing where
+the interpolation should not be trusted.
+
+\section{Recommended Near-Term Tasks}
+
+\subsection{Task 1: Add Integration-Aware Synthetic Generator}
+
+Modify the synthetic observation generator so each observation can be either instantaneous or
+integrated:
+\begin{equation}
+  y_i^{\mathrm{inst}} = u(\mathbf{r}_i,t_i),
+  \qquad
+  y_i^{\mathrm{int}} =
+  \frac{1}{T_{\mathrm{int}}}\int u(\mathbf{r}_i,\tau)\dd\tau.
+\end{equation}
+Numerically approximate the integral by sub-sampling within the integration window.
+
+\subsection{Task 2: Add Velocity and Integration Metadata}
+
+Every synthetic output directory should record:
+\begin{enumerate}[leftmargin=*]
+  \item true velocity vector;
+  \item speed;
+  \item direction;
+  \item integration time;
+  \item cadence;
+  \item beam count;
+  \item feature width;
+  \item $C_{\mathrm{samp}}$ and $C_{\mathrm{int}}$.
+\end{enumerate}
+
+\subsection{Task 3: Add 11-Beam Stress Geometry}
+
+Use 11 beams as a reliability stress test. Do not expect uniform accuracy. Expect the reliability
+map to degrade in unsampled regions.
+
+\subsection{Task 4: Compare Instantaneous-Truth and Integrated-Truth Metrics}
+
+For integrated products, evaluate against two truths:
+\begin{enumerate}[leftmargin=*]
+  \item instantaneous truth at the nominal timestamp;
+  \item integrated truth over the same time window.
+\end{enumerate}
+If the model is trained on integrated observations, it may be unfair to demand exact instantaneous
+truth recovery unless a deblurring or motion-compensation model is included.
+
+\subsection{Task 5: Add Velocity-Aware Coordinates}
+
+Test:
+\begin{equation}
+  (x,y,t)
+  \quad \mathrm{vs.}\quad
+  (x-u_x t,\;y-u_y t,\;t).
+\end{equation}
+This is the lowest-complexity way to see whether known or estimated velocity can improve
+fast-moving reconstruction without turning the project into a PINN.
+
+\subsection{Task 6: Add Reliability Prototype}
+
+Start with:
+\begin{equation}
+  R(\mathbf{x},t)
+  =
+  g\left(
+    d_{\mathrm{nearest}},
+    \sigma_{\mathrm{ISR}},
+    \sigma_{\mathrm{MC}},
+    T_{\mathrm{int}},
+    \|\mathbf{v}\|,
+    \mathrm{beam\ density}
+  \right),
+\end{equation}
+where $R$ is a reliability score and $g$ is initially a transparent hand-designed function. Later
+replace or calibrate this with conformal intervals.
+
+\section{Conclusion}
+
+The project is no longer simply testing whether a SIREN can draw a plausible plasma-density
+image. It is becoming a statistically and physically informed reconstruction framework for sparse
+ISR products. The key scientific question is not merely whether the INR can interpolate. The key
+question is:
+\begin{quote}
+Can the INR interpolate sparse ISR plasma fields while honestly indicating where the result is
+data constrained and where it is not?
+\end{quote}
+
+The next stage should make velocity, integration time, beam sparsity, uncertainty, and reliability
+central experimental axes. In particular, integration time is mandatory. At active-time velocities,
+one-minute, two-minute, five-minute, and ten-minute products correspond to fundamentally
+different inverse problems. A reliable reconstruction tool must know this, expose it, and warn the
+user when long integration, sparse beams, or fast motion make the interpolation unreliable.
+
+\begin{thebibliography}{99}
+
+\bibitem{Diaz2026Proposal}
+J. Diaz Pena.
+\newblock \emph{Uncertainty-Aware AI to Reconstruct 4D Ionospheric Structure from Sparse Multi-Beam Radar Data}.
+\newblock UAI PostDoc proposal, Google Drive project folder, 2026.
+\newblock \url{https://drive.google.com/file/d/1k37yBuWw5WK526jeX9Cg0AD9l357yV3J/view}
+
+\bibitem{Diaz2026ISRError}
+J. Diaz Pena.
+\newblock \emph{The Physics and Mathematics of Uncertainty in Incoherent Scatter Radar Data: An Analysis of AMISR Fitting Processes and Error Propagation}.
+\newblock Internal project report, Google Drive project folder, 2026.
+\newblock \url{https://drive.google.com/file/d/1USd56Wczouo_HAWEH3zIGyNd2jzOo24o/view}
+
+\bibitem{Diaz2026INRReport}
+J. Diaz Pena.
+\newblock \emph{AMISR Implicit Neural Representation for Ionospheric Plasma Density Reconstruction}.
+\newblock Internal project report, Google Drive project folder, 2026.
+\newblock \url{https://drive.google.com/file/d/1MYmq-zf65s5ODCWezga1P4W2LERVEE0n/view}
+
+\bibitem{Diaz2026INRProgress}
+J. Diaz Pena.
+\newblock \emph{Detailed Notes on the 3D INR Radar Case and the Synthetic-Data Validation Case}.
+\newblock Internal project report, Google Drive project folder, 2026.
+\newblock \url{https://drive.google.com/file/d/1bsz7WgimiaG3qVxcHwgKWQjK7Uu1BeaL/view}
+
+\bibitem{Gordon1958}
+W. E. Gordon.
+\newblock Incoherent scattering of radio waves by free electrons with applications to space exploration by radar.
+\newblock \emph{Proceedings of the IRE}, 46(11):1824--1829, 1958.
+
+\bibitem{Bowles1958}
+K. L. Bowles.
+\newblock Observation of vertical-incidence scatter from the ionosphere at 41 Mc/sec.
+\newblock \emph{Physical Review Letters}, 1(12):454--455, 1958.
+
+\bibitem{Farley1969}
+D. T. Farley.
+\newblock Incoherent scatter correlation function measurements.
+\newblock \emph{Radio Science}, 4(10):935--953, 1969.
+
+\bibitem{Lehtinen1986}
+M. S. Lehtinen.
+\newblock \emph{Statistical Theory of Incoherent Scatter Radar Measurements}.
+\newblock EISCAT Technical Note 86/45, 1986.
+
+\bibitem{LehtinenHuuskonen1996}
+M. S. Lehtinen and A. Huuskonen.
+\newblock General incoherent scatter analysis and GUISDAP.
+\newblock \emph{Journal of Atmospheric and Terrestrial Physics}, 58(1--4):435--452, 1996.
+
+\bibitem{HuuskonenLehtinen1996}
+A. Huuskonen and M. S. Lehtinen.
+\newblock The accuracy of incoherent scatter measurements: error estimates valid for high signal levels.
+\newblock \emph{Journal of Atmospheric and Terrestrial Physics}, 58(1--4):453--463, 1996.
+
+\bibitem{KudekiMilla2011}
+E. Kudeki and M. A. Milla.
+\newblock Incoherent scatter spectral theories. Part I: A general framework and results for small magnetic aspect angles.
+\newblock \emph{IEEE Transactions on Geoscience and Remote Sensing}, 49(1):315--328, 2011.
+
+\bibitem{HeinselmanNicolls2008}
+C. J. Heinselman and M. J. Nicolls.
+\newblock A Bayesian approach to electric field and E-region neutral wind estimation with the Poker Flat Advanced Modular Incoherent Scatter Radar.
+\newblock \emph{Radio Science}, 43, RS5013, 2008.
+
+\bibitem{Kelly2009PFISR}
+J. D. Kelly, C. J. Heinselman, J. F. Vickrey, and R. R. Vondrak.
+\newblock Initial results from Poker Flat Incoherent Scatter Radar.
+\newblock \emph{Journal of Atmospheric and Solar-Terrestrial Physics}, 71(6--7):635--646, 2009.
+
+\bibitem{Virtanen2008}
+I. I. Virtanen, M. S. Lehtinen, T. Nygren, M. Orispaa, and M. Vierinen.
+\newblock A Bayesian approach to incoherent scatter radar analysis.
+\newblock \emph{Annales Geophysicae}, 26:571--586, 2008.
+
+\bibitem{Virtanen2021}
+I. I. Virtanen, H. W. Tesfaw, L. Roininen, S. Lasanen, and A. Aikio.
+\newblock Bayesian filtering in incoherent scatter plasma parameter fits.
+\newblock \emph{Journal of Geophysical Research: Space Physics}, 126, e2020JA028700, 2021.
+
+\bibitem{Hatch2025E3D}
+S. M. Hatch, I. Virtanen, K. M. Laundal, H. W. Tesfaw, J. Vierinen, D. R. Huyghebaert, A. Spicher, and J. C. Hessen.
+\newblock Toolkit for incoherent scatter radar experiment design and applications to EISCAT 3D.
+\newblock \emph{Annales Geophysicae}, 43:633--649, 2025.
+\newblock \url{https://doi.org/10.5194/angeo-43-633-2025}
+
+\bibitem{Greenwald1995SuperDARN}
+R. A. Greenwald et al.
+\newblock DARN/SuperDARN: A global view of the dynamics of high-latitude convection.
+\newblock \emph{Space Science Reviews}, 71:761--796, 1995.
+
+\bibitem{Chisham2007SuperDARN}
+G. Chisham et al.
+\newblock A decade of the Super Dual Auroral Radar Network (SuperDARN): Scientific achievements, new techniques and future directions.
+\newblock \emph{Surveys in Geophysics}, 28:33--109, 2007.
+
+\bibitem{Kelley2009}
+M. C. Kelley.
+\newblock \emph{The Earth's Ionosphere: Plasma Physics and Electrodynamics}.
+\newblock Academic Press, second edition, 2009.
+
+\bibitem{Hansen1992LCurve}
+P. C. Hansen.
+\newblock Analysis of discrete ill-posed problems by means of the L-curve.
+\newblock \emph{SIAM Review}, 34(4):561--580, 1992.
+
+\bibitem{Sitzmann2020SIREN}
+V. Sitzmann, J. N. P. Martel, A. W. Bergman, D. B. Lindell, and G. Wetzstein.
+\newblock Implicit neural representations with periodic activation functions.
+\newblock \emph{Advances in Neural Information Processing Systems}, 2020.
+\newblock \url{https://arxiv.org/abs/2006.09661}
+
+\bibitem{Tancik2020Fourier}
+M. Tancik, P. P. Srinivasan, B. Mildenhall, S. Fridovich-Keil, N. Raghavan, U. Singhal, R. Ramamoorthi, J. Barron, and R. Ng.
+\newblock Fourier features let networks learn high frequency functions in low dimensional domains.
+\newblock \emph{Advances in Neural Information Processing Systems}, 2020.
+\newblock \url{https://arxiv.org/abs/2006.10739}
+
+\bibitem{Liu2023FINER}
+Z. Liu, H. Zhu, Q. Zhang, J. Fu, W. Deng, Z. Ma, Y. Guo, and X. Cao.
+\newblock FINER: Flexible spectral-bias tuning in implicit neural representation by variable-periodic activation functions.
+\newblock arXiv:2312.02434, 2023.
+\newblock \url{https://arxiv.org/abs/2312.02434}
+
+\bibitem{Zhu2024FINERPP}
+H. Zhu, Z. Liu, Q. Zhang, J. Fu, W. Deng, Z. Ma, Y. Guo, and X. Cao.
+\newblock FINER++: Building a family of variable-periodic functions for activating implicit neural representation.
+\newblock arXiv:2407.19434, 2024.
+\newblock \url{https://arxiv.org/abs/2407.19434}
+
+\bibitem{FridovichKeil2023KPlanes}
+S. Fridovich-Keil, G. Meanti, F. Warburg, B. Recht, and A. Kanazawa.
+\newblock K-Planes: Explicit radiance fields in space, time, and appearance.
+\newblock \emph{CVPR}, 2023.
+\newblock \url{https://arxiv.org/abs/2301.10241}
+
+\bibitem{Muller2022InstantNGP}
+T. Muller, A. Evans, C. Schied, and A. Keller.
+\newblock Instant neural graphics primitives with a multiresolution hash encoding.
+\newblock \emph{ACM Transactions on Graphics}, 41(4), 2022.
+\newblock \url{https://arxiv.org/abs/2201.05989}
+
+\bibitem{RF4D2024}
+RF4D authors.
+\newblock \emph{RF4D: Neural Radar Fields for Novel View Synthesis in Outdoor Dynamic Scenes}.
+\newblock Project paper in UAI Drive paper folder.
+
+\bibitem{SpINR2024}
+SpINR authors.
+\newblock \emph{SpINR: Neural Volumetric Reconstruction for FMCW Radars}.
+\newblock Project paper in UAI Drive paper folder.
+
+\bibitem{Gal2016Dropout}
+Y. Gal and Z. Ghahramani.
+\newblock Dropout as a Bayesian approximation: Representing model uncertainty in deep learning.
+\newblock \emph{International Conference on Machine Learning}, 2016.
+\newblock \url{https://arxiv.org/abs/1506.02142}
+
+\bibitem{KendallGal2017}
+A. Kendall and Y. Gal.
+\newblock What uncertainties do we need in Bayesian deep learning for computer vision?
+\newblock \emph{Advances in Neural Information Processing Systems}, 2017.
+\newblock \url{https://arxiv.org/abs/1703.04977}
+
+\bibitem{AngelopoulosBates2021}
+A. N. Angelopoulos and S. Bates.
+\newblock A gentle introduction to conformal prediction and distribution-free uncertainty quantification.
+\newblock arXiv:2107.07511, 2021.
+\newblock \url{https://arxiv.org/abs/2107.07511}
+
+\bibitem{Romano2019CQR}
+Y. Romano, E. Patterson, and E. J. Candes.
+\newblock Conformalized quantile regression.
+\newblock \emph{Advances in Neural Information Processing Systems}, 2019.
+\newblock \url{https://arxiv.org/abs/1905.03222}
+
+\bibitem{Chen2018GradNorm}
+Z. Chen, V. Badrinarayanan, C.-Y. Lee, and A. Rabinovich.
+\newblock GradNorm: Gradient normalization for adaptive loss balancing in deep multitask networks.
+\newblock \emph{International Conference on Machine Learning}, 2018.
+\newblock \url{https://arxiv.org/abs/1711.02257}
+
+\bibitem{Heydari2019SoftAdapt}
+A. A. Heydari, C. A. Thompson, and A. Mehmood.
+\newblock SoftAdapt: Techniques for adaptive loss weighting of neural networks with multi-part loss functions.
+\newblock arXiv:1912.12355, 2019.
+\newblock \url{https://arxiv.org/abs/1912.12355}
+
+\bibitem{Kendall2018MultiTask}
+A. Kendall, Y. Gal, and R. Cipolla.
+\newblock Multi-task learning using uncertainty to weigh losses for scene geometry and semantics.
+\newblock \emph{CVPR}, 2018.
+\newblock \url{https://arxiv.org/abs/1705.07115}
+
+\bibitem{Wang2021GradientPathologies}
+S. Wang, Y. Teng, and P. Perdikaris.
+\newblock Understanding and mitigating gradient flow pathologies in physics-informed neural networks.
+\newblock \emph{SIAM Journal on Scientific Computing}, 43(5):A3055--A3081, 2021.
+\newblock \url{https://arxiv.org/abs/2001.04536}
+
+\bibitem{Bischof2021ReLoBRaLo}
+R. Bischof and M. A. Kraus.
+\newblock Multi-objective loss balancing for physics-informed deep learning.
+\newblock arXiv:2110.09813, 2021.
+\newblock \url{https://arxiv.org/abs/2110.09813}
+
+\end{thebibliography}
+
+\end{document}

@@ -1,0 +1,271 @@
+This tasks will be a long one and it revolves around a neural network that is trying to generate vizualisations of 4D data done by incoherent scatter radar using implicit nueral fields with soft priors.
+To start, most information is in the google drive, in a folder called PostDoc UAI Codex. Inside is the original grant won to do so. As well as books, principal papers used as references, and documentation of the evolution of the project. Pdf are numerated which shows their point in time created, so newer ones might have updates and fixes that older ones missed. This documents are fundamental to understand the context, objetive, and issue. 
+On WSL on this PC (whcih if I did everything write you are running on) there is a folder called postdoc/inr-radar where inside is the evolution of my work. From testing INR with images to 2d and 3d (2 space coordinates plus time) and finally a synthetic approach. 
+So intially I tested if I could reconstruct and image isung an implicit neural representation of it, thinking of how MRI do it (references how this). I found one example called SIREN which had a repo, paper and webpage open with a lot of information on them (paper can be found in papers, repo ishttps://github.com/vsitzmann/siren)
+
+So the issue is the sparcity of ISR data, where we have points along a beam. In the past as youy can see on my first publication where I was the first author I did a simple natural neighbors interpolation and thas was criticized as not really physical. This project, as you can read in the proposal, attempts to be a little more physical by using the data products and their error (documentation goes over the errors and how are they calculated) as well as some soft priors. 
+
+I also found out that running an INR with more than oen hour of data (weather with a 2 minut integration time or 5 minut) is uselss since plasma is not correlated longer than that, so this makes testing quiet easy since we can run this on one window and keep trying to improve it. 
+
+your job is as follows: 
+Test the synthetic approach using the references, your own internt searches, and so own. Use the 42 beam configuration that already exists but add a 23 beam configuration that also exists. They can be uniformly organized. 
+
+You are helping me continue an INR / SIREN-like neural-field project for reconstructing 3D ionospheric electron density from sparse radar-like samples and from synthetic test cases.
+This is not a generic machine-learning project. Do not redesign the entire pipeline. The goal is to continue from the existing working code, preserve the current real-data and synthetic-data logic, automate controlled experiments, and produce quantitative comparisons.
+The original working project is:
+/home/jdiaz/postdoc/inr-radar
+Before making any changes, create a separate working copy called:
+/home/jdiaz/postdoc/codex_inr_radar
+All edits, scripts, experiments, logs, generated figures, and outputs must happen only inside:
+/home/jdiaz/postdoc/codex_inr_radar
+Do not modify anything under:
+/home/jdiaz/postdoc/inr-radar
+If the safe copy already exists, inspect it and ask before overwriting it. Do not delete existing outputs unless explicitly instructed.
+First verify the environment. Run:
+pwd
+uname -a
+whoami
+which python
+python --version
+git status --short
+If you are not in WSL, or if the active path is not under /home/jdiaz/postdoc/codex_inr_radar, stop and report the problem. Do not proceed from a Windows C:\ path.
+After the safe copy exists, work in:
+/home/jdiaz/postdoc/codex_inr_radar/inf_fakedata_3d
+The current project state is approximately this:
+1.	There is a real 3D radar INR pipeline that uses real AMISR-like radar data.
+2.	There is a synthetic 3D pipeline that was created to mirror the real 3D trainer as closely as possible, while replacing the data source with synthetic plasma data.
+3.	The synthetic case uses sparse fake radar samples from a known analytic truth field, so we can evaluate the trained network against the full true field, not only at measured points.
+4.	The important trainer is synthetic_train_3d.py.
+5.	The trainer supports data loss plus optional curvature regularization.
+6.	The current regularization form is based on second derivatives of the network output f(x,y,t) = log10(Ne):
+o	spatial curvature terms involving fxx, fxy, fyy
+o	temporal curvature term involving ftt
+7.	The current reference run uses reference-ratio regularization with:
+o	target_xy_ratio = 0.30
+o	target_t_ratio = 0.30
+8.	The current synthetic case is a high-amplitude moving Gaussian-like electron-density structure on a 500 km by 500 km domain.
+9.	We are using a 31-time-record window, similar to a short real radar window.
+10.	The network is currently fast enough that these tests are feasible; this is not intended to be a days-long run over huge datasets.
+The baseline command that has been used is:
+python3 synthetic_train_3d.py
+--synthetic_csv outputs/synthetic_high_amp_left_right/synthetic_observations.csv
+--output_dir outputs/synthetic_train_high_amp_win0_diag_1500
+--window_start_index 0
+--window_size_records 31
+--reference_loss_weights
+--target_xy_ratio 0.30
+--target_t_ratio 0.30
+--epsilon_data 1e-6
+--lambda_warmup_steps 500
+--num_steps 15000
+--summary_every 500
+--component_grad_every 500
+--num_collocation 16384
+--num_diagnostic_collocation 16384
+--collocation_grid_nx 100
+--collocation_grid_ny 100
+Note: the output directory name says 1500, but the run is actually 15000 steps. When creating new runs, use directory names that say 15000 to avoid confusion.
+Your first job is not to rewrite the trainer. Your first job is to inspect the existing code and document what is already there.
+Read these files if they exist:
+synthetic_plasma.py
+synthetic_dataset.py
+synthetic_train_3d.py
+synthetic_analyze_reconstruction.py
+models.py
+datasets.py
+train_radar_3d_window_reference_reg.py
+train_radar_3d_window_reference_reg_diagnostic.py
+Do not edit yet. First create:
+CODEX_INR_PLAN.md
+In that file, summarize:
+1.	Which scripts are responsible for generating synthetic data.
+2.	Which scripts train the synthetic INR.
+3.	Which scripts analyze reconstruction error.
+4.	Which command-line arguments control data loss, regularization, collocation, diagnostics, and number of iterations.
+5.	Which existing outputs are already present.
+6.	What files you propose to add.
+7.	What files you propose not to touch.
+After writing CODEX_INR_PLAN.md, stop and report.
+After I approve the plan, continue with the following project goals.
+Goal 1: automate the current synthetic regularization sweep.
+Create a script called:
+run_synthetic_regularization_sweep.sh
+This script should run four controlled experiments using the same synthetic CSV, same window, same number of steps, same collocation grid, same diagnostic settings, same model defaults, and same training script.
+The four experiments are:
+A. Data only:
+•	no reference_loss_weights
+•	no target_xy_ratio
+•	no target_t_ratio
+•	loss should be data loss only
+B. Baseline regularization:
+•	reference_loss_weights enabled
+•	target_xy_ratio = 0.30
+•	target_t_ratio = 0.30
+C. Stronger spatial regularization:
+•	reference_loss_weights enabled
+•	target_xy_ratio = 0.70
+•	target_t_ratio = 0.30
+D. Stronger spatial and temporal regularization:
+•	reference_loss_weights enabled
+•	target_xy_ratio = 0.70
+•	target_t_ratio = 0.70
+Use:
+--synthetic_csv outputs/synthetic_high_amp_left_right/synthetic_observations.csv
+--window_start_index 0
+--window_size_records 31
+--epsilon_data 1e-6
+--lambda_warmup_steps 500
+--num_steps 15000
+--summary_every 500
+--component_grad_every 500
+--num_collocation 16384
+--num_diagnostic_collocation 16384
+--collocation_grid_nx 100
+--collocation_grid_ny 100
+Write outputs to clearly named directories:
+outputs/codex_sweep_high_amp_data_only_15000
+outputs/codex_sweep_high_amp_xy030_t030_15000
+outputs/codex_sweep_high_amp_xy070_t030_15000
+outputs/codex_sweep_high_amp_xy070_t070_15000
+Write logs to:
+logs/codex_sweep_high_amp_data_only_15000.log
+logs/codex_sweep_high_amp_xy030_t030_15000.log
+logs/codex_sweep_high_amp_xy070_t030_15000.log
+logs/codex_sweep_high_amp_xy070_t070_15000.log
+The script should be safe to rerun. If an output directory already has a completed model checkpoint and history.csv, it should not blindly overwrite it. Either skip it or ask.
+Do not modify synthetic_train_3d.py for this goal unless it is impossible to run the intended experiments without a small fix. If a fix is needed, explain the reason first.
+Goal 2: verify diagnostics are independent of regularization.
+After the data-only run, check history.csv.
+Confirm whether derivative diagnostic columns exist and are populated, including columns related to:
+fxx
+fxy
+fyy
+ftt
+grad_norm_total
+grad_norm_data
+grad_norm_xy_weighted
+grad_norm_t_weighted
+If the data-only run has valid derivative diagnostics even when regularization is off, report that the trainer is behaving correctly.
+If the data-only run has NaN derivative diagnostics simply because regularization is off, then propose a minimal patch: diagnostics should remain active even when the curvature loss terms are not included in the training loss. Do not rewrite the trainer. Only decouple diagnostic evaluation from regularization weighting.
+Goal 3: improve the reconstruction analysis script, but keep it controlled.
+Inspect synthetic_analyze_reconstruction.py.
+The existing analysis should compare the trained model against the analytic synthetic truth on a dense grid. It should compute:
+true log10(Ne)
+predicted log10(Ne)
+prediction error
+absolute error
+density RMSE
+density MAE
+density bias
+density p95 absolute error
+density max absolute error
+It should also compute gradient errors if supported:
+true dlog10Ne/dx
+true dlog10Ne/dy
+true dlog10Ne/dt
+model dlog10Ne/dx
+model dlog10Ne/dy
+model dlog10Ne/dt
+gradient RMSE
+gradient MAE
+gradient p95 absolute error
+Do not convert this analysis into a complicated command-line framework unless necessary. For this project, it is acceptable for analysis scripts to have clearly visible configuration variables at the top.
+Create a new script called:
+analyze_synthetic_sweep.py
+This script should have a list of run directories at the top, for example:
+RUNS = [
+("data_only", Path("outputs/codex_sweep_high_amp_data_only_15000")),
+("xy030_t030", Path("outputs/codex_sweep_high_amp_xy030_t030_15000")),
+("xy070_t030", Path("outputs/codex_sweep_high_amp_xy070_t030_15000")),
+("xy070_t070", Path("outputs/codex_sweep_high_amp_xy070_t070_15000")),
+]
+It should analyze each run and write each run’s reconstruction analysis under that run directory, for example:
+outputs/codex_sweep_high_amp_xy030_t030_15000/error_analysis/
+If the existing single-run analysis script can be reused by importing functions, do that. If not, create a clean wrapper or minimally refactor the analysis code. Avoid duplication if possible, but do not break the existing single-run analysis workflow.
+Goal 4: add regional error metrics.
+The current full-domain error maps are useful but not enough. Add regional metrics because the synthetic field is evaluated over the entire 500 km by 500 km domain, while sparse radar samples do not constrain all regions equally.
+At minimum compute metrics for these regions:
+1.	Full domain.
+2.	Interior domain, excluding a boundary strip. Use a configurable boundary fraction or boundary distance.
+3.	Near-observation region, where a grid point is within a configurable distance of at least one synthetic observed sample point at that time.
+4.	High-gradient region, where the magnitude of the true gradient is above a chosen percentile threshold, for example top 25 percent or top 10 percent.
+For each region compute:
+density RMSE
+density MAE
+density bias
+density p95 absolute error
+density max absolute error
+For gradients compute, if available:
+dx gradient RMSE
+dy gradient RMSE
+dt gradient RMSE
+combined gradient magnitude RMSE
+gradient p95 absolute error
+Write these to a CSV:
+comparison/regional_error_summary.csv
+Also write per-run regional summaries inside each run’s error_analysis directory.
+Goal 5: compare the four runs.
+Create a script called:
+compare_synthetic_regularization_sweep.py
+This script should read the error summaries and training histories from the four run directories and create:
+comparison/regularization_sweep_summary.csv
+comparison/density_rmse_by_region.png
+comparison/density_p95_by_region.png
+comparison/gradient_rmse_by_region.png
+comparison/loss_history_comparison.png
+comparison/derivative_diagnostic_comparison.png
+The comparison should answer:
+1.	Does data-only fit the sparse observations but create more oscillatory behavior between points?
+2.	Does baseline 0.30/0.30 regularization reduce artifacts without smearing the Gaussian?
+3.	Does stronger spatial regularization 0.70/0.30 improve gradient recovery?
+4.	Does stronger spatial and temporal regularization 0.70/0.70 oversmooth the moving structure or improve temporal consistency?
+5.	Which run gives the best density reconstruction?
+6.	Which run gives the best gradient reconstruction?
+7.	Is the best density run also the best gradient run?
+Do not decide only from one metric. The output should include both scalar density error and gradient error.
+Goal 6: produce a human-readable report.
+Create or update:
+CODEX_SYNTHETIC_SWEEP_REPORT.md
+This report should include:
+1.	A clear description of the synthetic test.
+2.	The reason for using synthetic data: known analytic truth, dense error evaluation, ability to test gradients and curvature.
+3.	A clear distinction between:
+o	radar/sample points
+o	collocation points
+o	diagnostic collocation points
+o	plotting/evaluation grid
+4.	The four-run experiment table.
+5.	Training command settings.
+6.	Error metrics.
+7.	Figures generated.
+8.	Interpretation of whether regularization helps.
+9.	Recommendations for the next controlled experiment.
+Do not oversell results. If gradients are not reliable, say so. If density reconstruction is good but derivative recovery has artifacts, say so.
+Goal 7: propose the next experiment, but do not run it automatically.
+After the first four-run sweep is analyzed, propose the next experiment. Do not launch it without approval.
+Possible next experiments may include:
+1.	Increasing num_collocation from 16384 to 32768 while keeping the same grid.
+2.	Increasing collocation_grid_nx and collocation_grid_ny from 100 to 150.
+3.	Trying target_xy_ratio = 1.00 if 0.70 helps but does not fully suppress derivative artifacts.
+4.	Trying target_t_ratio lower or higher depending on whether temporal smoothing helps or smears the moving patch.
+5.	Trying a different synthetic velocity or patch width.
+6.	Trying real radar beam geometry instead of generic sparse synthetic sample geometry.
+When proposing the next experiment, explicitly state which variable changes and which variables stay fixed.
+Important constraints:
+1.	Do not modify the original project under /home/jdiaz/postdoc/inr-radar.
+2.	Work only under /home/jdiaz/postdoc/codex_inr_radar.
+3.	Do not rewrite the trainer unless a minimal fix is necessary.
+4.	Prefer adding scripts and reports over invasive refactoring.
+5.	Preserve existing working behavior.
+6.	Keep commands reproducible.
+7.	Keep logs.
+8.	Do not delete output folders.
+9.	Do not assume a run completed unless the expected checkpoint, history.csv, and analysis outputs exist.
+10.	If a run is long, launch it in a way that writes logs and can be inspected later.
+11.	Update CODEX_TASK_LOG.md after each completed task with:
+o	what files were created or modified
+o	what commands were run
+o	where outputs were written
+o	what remains to be done
+The final goal is not just to produce pretty plots. The final goal is to determine whether the INR can reconstruct a known synthetic plasma structure from sparse radar-like samples, whether regularization improves or harms the reconstruction, and whether derivative quantities are trustworthy enough to be used later in the real 3D radar case.
+
