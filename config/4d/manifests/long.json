@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "purpose": "long",
-  "output_root": "/home/jdiaz/postdoc/inr-isr-4d/outputs/studies/long",
+  "output_root": "/home/jdiaz/postdoc/inr-isr/outputs/studies/long",
   "defaults": {
     "repetition_seeds": [0, 1, 2],
     "split": {"unit": "beam", "strategy": "random", "validation_group_count": 4, "calibration_group_count": 6, "test_group_count": 6, "seed": 0},

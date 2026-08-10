@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "purpose": "pilot",
-  "output_root": "/home/jdiaz/postdoc/inr-isr-4d/outputs/studies/pilot",
+  "output_root": "/home/jdiaz/postdoc/inr-isr/outputs/studies/pilot",
   "defaults": {
     "split": {"unit": "beam", "strategy": "random", "validation_group_count": 2, "calibration_group_count": 3, "test_group_count": 3, "seed": 0},
     "training": {

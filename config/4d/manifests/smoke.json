@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "purpose": "smoke",
-  "output_root": "/home/jdiaz/postdoc/inr-isr-4d/outputs/studies/smoke",
+  "output_root": "/home/jdiaz/postdoc/inr-isr/outputs/studies/smoke",
   "defaults": {
     "split": {
       "unit": "beam",

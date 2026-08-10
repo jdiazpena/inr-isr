@@ -7,7 +7,7 @@ Status: Active operational runbook
 ## Environment and tests
 
 ```bash
-cd /home/jdiaz/postdoc/inr-isr-4d
+cd /home/jdiaz/postdoc/inr-isr
 PYTHONDONTWRITEBYTECODE=1 python -m pytest -p no:cacheprovider tests tests_4d
 ```
 
@@ -81,7 +81,7 @@ PYTHONPATH=src python -m inr_isr_4d.runner config/4d/manifests/long.json all --d
 Prepared later long-study command (not executed during implementation):
 
 ```bash
-cd /home/jdiaz/postdoc/inr-isr-4d
+cd /home/jdiaz/postdoc/inr-isr
 PYTHONPATH=src python -m inr_isr_4d.runner config/4d/manifests/long.json all
 ```
 
@@ -90,7 +90,7 @@ PYTHONPATH=src python -m inr_isr_4d.runner config/4d/manifests/long.json all
 The current sandbox does not expose CUDA. On the target GPU, first run:
 
 ```bash
-cd /home/jdiaz/postdoc/inr-isr-4d
+cd /home/jdiaz/postdoc/inr-isr
 PYTHONPATH=src python -m inr_isr_4d.runner config/4d/manifests/pilot.json all --dry-run --case-id "pilot support aware high collocation"
 PYTHONPATH=src python -m inr_isr_4d.runner config/4d/manifests/pilot.json all --case-id "pilot support aware high collocation"
 ```

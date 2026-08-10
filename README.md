@@ -50,7 +50,7 @@ environment automatically.
 Run commands from the new project root:
 
 ```bash
-cd /home/jdiaz/postdoc/inr-isr-4d
+cd /home/jdiaz/postdoc/inr-isr
 ```
 
 ### Additive 4D manifests
