@@ -17,6 +17,9 @@ we can compute density and gradient errors against known ground truth.
 
 from __future__ import annotations
 
+from inr_isr.transforms import (normalize_minus1_plus1 as _normalize_minus1_plus1,
+                                denormalize_minus1_plus1 as _denormalize_minus1_plus1)
+
 from pathlib import Path
 from typing import Sequence
 
@@ -25,58 +28,29 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
+from inr_isr.data.window import prepare_selected_window
+
 
 # ============================================================
 # Normalization helpers
 # ============================================================
 
-def normalize_minus1_plus1(
-    values: np.ndarray,
-    vmin: float | None = None,
-    vmax: float | None = None,
-    name: str = "values",
-) -> tuple[np.ndarray, float, float]:
+def normalize_minus1_plus1(values: np.ndarray, vmin: float | None = None,
+                          vmax: float | None = None, name: str = "values") -> tuple[np.ndarray, float, float]:
+    """Compatibility name for shared float64 selected-window xyt normalization.
+
+    Retains scalar supplied/nanmin limits, original warnings/errors and shapes;
+    does not choose4D training-only fitting or mutate inputs. See transforms.py.
     """
-    Normalize values to [-1, 1].
+    return _normalize_minus1_plus1(values, vmin=vmin, vmax=vmax, name=name)
 
-    Formula:
-        y_norm = 2 * (y - ymin) / (ymax - ymin) - 1
+
+def denormalize_minus1_plus1(values_norm: np.ndarray, vmin: float, vmax: float) -> np.ndarray:
+    """Compatibility xyt inverse: same float64 shape and physical/log units.
+
+    Shared arithmetic adds no fitting, clipping, limit checks or mutation.
     """
-
-    values = np.asarray(values, dtype=np.float64)
-
-    if vmin is None:
-        vmin = float(np.nanmin(values))
-
-    if vmax is None:
-        vmax = float(np.nanmax(values))
-
-    if not np.isfinite(vmin) or not np.isfinite(vmax):
-        raise ValueError(f"{name}: non-finite normalization limits.")
-
-    if vmax <= vmin:
-        raise ValueError(
-            f"{name}: cannot normalize because vmax <= vmin "
-            f"({vmax} <= {vmin})."
-        )
-
-    values_norm = 2.0 * (values - vmin) / (vmax - vmin) - 1.0
-
-    return values_norm, vmin, vmax
-
-
-def denormalize_minus1_plus1(
-    values_norm: np.ndarray,
-    vmin: float,
-    vmax: float,
-) -> np.ndarray:
-    """
-    Convert normalized values from [-1, 1] back to the original scale.
-    """
-
-    values_norm = np.asarray(values_norm, dtype=np.float64)
-
-    return 0.5 * (values_norm + 1.0) * (vmax - vmin) + vmin
+    return _denormalize_minus1_plus1(values_norm, vmin, vmax)
 
 
 # ============================================================
@@ -181,76 +155,13 @@ class SyntheticPlasmaTimeDataset(Dataset):
                     f"({len(selected_times)} records)"
                 )
 
-        # --------------------------------------------------------
-        # Clean rows
-        # --------------------------------------------------------
-        df = df.replace([np.inf, -np.inf], np.nan)
-
-        if drop_bad_rows:
-            before = len(df)
-            df = df.dropna(subset=required_cols).copy()
-            after = len(df)
-
-            if verbose and after < before:
-                print(f"SyntheticPlasmaTimeDataset: dropped {before - after} bad rows.")
-
-        if len(df) == 0:
-            raise ValueError("No valid synthetic rows left after cleaning.")
-
-        self.df = df.reset_index(drop=True)
-
-        # --------------------------------------------------------
-        # Extract raw arrays
-        # --------------------------------------------------------
-        coords_raw = self.df.loc[:, self.coord_cols].to_numpy(dtype=np.float64)
-        values_raw = self.df.loc[:, [self.target_col]].to_numpy(dtype=np.float64)
-
-        self.coords_raw = coords_raw.astype(np.float64)
-        self.values_raw = values_raw.astype(np.float64)
-
-        # --------------------------------------------------------
-        # Normalize coordinates
-        # --------------------------------------------------------
-        self.coord_scalers: dict[str, dict[str, float]] = {}
-        coords_out = np.zeros_like(coords_raw, dtype=np.float64)
-
-        for i, col in enumerate(self.coord_cols):
-            if self.normalize_coords:
-                coords_out[:, i], vmin, vmax = normalize_minus1_plus1(
-                    coords_raw[:, i],
-                    name=col,
-                )
-            else:
-                coords_out[:, i] = coords_raw[:, i]
-                vmin = float(np.nanmin(coords_raw[:, i]))
-                vmax = float(np.nanmax(coords_raw[:, i]))
-
-            self.coord_scalers[col] = {
-                "min": vmin,
-                "max": vmax,
-            }
-
-        # --------------------------------------------------------
-        # Normalize target
-        # --------------------------------------------------------
-        if self.normalize_values:
-            values_out, target_min, target_max = normalize_minus1_plus1(
-                values_raw,
-                name=self.target_col,
-            )
-        else:
-            values_out = values_raw
-            target_min = float(np.nanmin(values_raw))
-            target_max = float(np.nanmax(values_raw))
-
-        self.target_scaler = {
-            "column": self.target_col,
-            "min": target_min,
-            "max": target_max,
-        }
-
-        self.coords = torch.from_numpy(coords_out.astype(np.float32))
-        self.values = torch.from_numpy(values_out.astype(np.float32))
+        # Same selected-window fit/tensor policy for both existing3D sources.
+        # Reader/window/target validation above remains source-specific.
+        prepare_selected_window(
+            self, df, drop_bad_rows=drop_bad_rows, report_drops=verbose,
+            dropped_prefix="SyntheticPlasmaTimeDataset", empty_message="No valid synthetic rows left after cleaning.",
+            normalize=normalize_minus1_plus1,
+        )
 
     def __len__(self) -> int:
         return 1

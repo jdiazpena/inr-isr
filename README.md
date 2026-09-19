@@ -1,3 +1,7 @@
+Created: Unknown (historical repository document)
+Last edited: 2026-09-14
+Status: Active overview; latest-stable inr-isr environment supersedes historical base setup
+
 # INR ISR 4D Reconstruction and Split Conformal Evaluation
 
 ## Evidence and scope boundary
@@ -41,11 +45,72 @@ workflows, documentation, tests, and generated results are not mixed together.
 Raw radar data are not copied into this repository. Real-data workflows receive the
 HDF5 input path as a command-line argument or through their current defaults.
 
-The verified Python dependencies are recorded in `requirements.txt`. The existing
-WSL installation uses `/home/jdiaz/miniconda3`; shell launchers activate its `base`
-environment automatically.
+Historical verified dependencies are recorded in `requirements.txt`; those older
+pins are not the current latest-stable environment specification. The existing WSL
+installation uses `/home/jdiaz/miniconda3`; all four shell launchers now activate
+`inr-isr` through `scripts/project_environment.sh`, validate the interpreter and
+never fall back to base. The environment uses Python 3.14.7 and latest stable
+dependencies installed on 2026-09-14. Recorded versions and compatibility limits
+are in `/home/jdiaz/projects/postdocuai/docs/topics/project_environment/README.md`.
+The old `np.trapz` test calls were changed to `np.trapezoid` without changing
+their inputs, assertions or tolerances. Under the recorded `inr-isr` environment,
+the current GPU-repair source-bound suite passes 181 tests; bounded
+four-workflow CUDA training/reload/query preservation is separately recorded
+in the documentation workspace. Neither installation nor tests imply
+scientific validation.
+
+Check any shell launcher's environment without running its workload:
+
+```bash
+bash scripts/run_tests.sh --check-environment
+```
+
+Direct Python workflows require `conda activate inr-isr` or its explicit
+interpreter. Neural-network training and inference require CUDA by default and
+fail clearly when it is unavailable. CPU remains supported only when selected
+explicitly; CPU-side data loading, plotting and serialization are normal and do
+not imply that the model executed on the CPU.
 
 ## Main Workflows
+
+### Explicit xyt/xyzt reconstruction front door
+
+`python -m inr_isr.workflow` now has `train` and `query` commands. A JSON file
+separately declares `input` (synthetic or radar and named xyt/xyzt axes),
+`preprocessing` (the existing selected-window or training-split fit),
+`training_recipe` (one existing scientific policy), and an optional physical
+`query`. The named recipes are `active_xyt_synthetic`, `active_xyt_radar`, and
+`native_xyzt`; the latter accepts either existing synthetic or radar xyzt
+source. An input source does not silently select a loss. The older fixed and
+reference-window 3D trainers keep their original commands and are not renamed
+as new recipes.
+
+Use the guarded project interpreter and a fresh output directory. These commands
+use CUDA by default; do not add a CPU selector unless CPU execution is the
+deliberate experiment:
+
+```bash
+/usr/bin/python3 -B /home/jdiaz/projects/postdocuai/docs/topics/project_environment/run_project.py -m inr_isr.workflow train --config /home/jdiaz/postdoc/inr-isr/outputs/refactor_candidate/r6-20260918-01/interface1/S3-L/attempt2/workflow.json --output /home/jdiaz/postdoc/inr-isr/outputs/learning/readme-r6-xyt-synthetic-01
+/usr/bin/python3 -B /home/jdiaz/projects/postdocuai/docs/topics/project_environment/run_project.py -m inr_isr.workflow query --config /home/jdiaz/postdoc/inr-isr/outputs/refactor_candidate/r6-20260918-01/interface1/S3-L/attempt2/workflow.json --checkpoint /home/jdiaz/postdoc/inr-isr/outputs/learning/readme-r6-xyt-synthetic-01/training/model_final.pt --output /home/jdiaz/postdoc/inr-isr/outputs/learning/readme-r6-xyt-synthetic-grid-01
+```
+
+Those displayed learning-output paths are examples, not previously executed
+folders. The four **executed GPU-default** synthetic/actual xyt/xyzt train,
+reload, measured and 4,355-grid routes, with worked explanations and exact
+results, are in
+`/home/jdiaz/projects/postdocuai/docs/topics/gpu_repair_handoff/examples/`.
+The actual-radar guides include tested two- and five-minute-product variations.
+Change the JSON and use a new output folder for a new experiment. Direct query
+returns log10 electron density at physical coordinates; it does not perform
+conformal calibration or assert interpolation accuracy.
+
+For the explicit CPU alternative, set
+`training_recipe.parameters.cpu=true` in an xyt configuration or
+`training_recipe.config.runtime.device="cpu"` in an xyzt configuration. For a
+query, set `query.device="cpu"` or pass `--device cpu`, but do not provide
+conflicting choices. Training/query outputs include requested and resolved
+device, model and batch device, GPU identity when applicable, and precision
+metadata; inspect those records instead of inferring device use from speed.
 
 Run commands from the new project root:
 

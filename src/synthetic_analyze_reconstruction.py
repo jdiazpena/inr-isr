@@ -35,6 +35,17 @@ import numpy as np
 import pandas as pd
 import torch
 
+from inr_isr.checkpoints import (torch_load_checkpoint as _torch_load_checkpoint,
+                                 build_model_from_checkpoint as _build_model_from_checkpoint)
+from inr_isr.transforms import (denormalize_target as _denormalize_target,
+                                normalize_coords_from_scalers as _normalize_coords_from_scalers)
+from inr_isr.prediction import predict_log10_on_coords as _predict_log10_on_coords
+from inr_isr.analysis import (
+    predict_log10_and_gradients_on_coords as _predict_log10_and_gradients_on_coords,
+    compute_error_metrics as _compute_error_metrics,
+    select_analyzer_time_indices as _select_analyzer_time_indices,
+    make_analyzer_dense_grid as _make_analyzer_dense_grid,
+)
 from models import MLPINR
 from synthetic_plasma import (
     MovingGaussianPatch,
@@ -93,7 +104,7 @@ CMAP_FIELD = "plasma"
 CMAP_ERROR = "RdBu_r"
 DPI = 200
 
-# Device. "auto" uses cuda if available.
+# Device. "auto" requires CUDA; set "cpu" for the explicit CPU alternative.
 DEVICE = "auto"
 
 
@@ -154,53 +165,28 @@ def load_json(path: Path) -> dict:
         return json.load(f)
 
 
-def torch_load_checkpoint(path: Path, device: torch.device) -> dict:
-    """Load a checkpoint across supported PyTorch keyword variants."""
+def torch_load_checkpoint(path: Path, device: torch.device):
+    """Retained legacy public adapter; shared implementation preserves xyt policy.
 
-    try:
-        return torch.load(path, map_location=device, weights_only=False)
-    except TypeError:
-        return torch.load(path, map_location=device)
+    See inr_isr checkpoints/transforms/prediction for shapes, units, errors, RNG
+    and side effects. Gradient/truth/plot analysis remains the native recipe.
+    """
+    return _torch_load_checkpoint(path, device)
 
 
 def choose_device(device_name: str = DEVICE) -> torch.device:
-    """Resolve `auto`, CPU, or an explicit PyTorch device string."""
-
-    if device_name == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    return torch.device(device_name)
+    """Resolve the shared CUDA-required default or explicit CPU alternative."""
+    from inr_isr.device import resolve_device
+    return resolve_device(device_name)
 
 
-def build_model_from_checkpoint(checkpoint: dict, device: torch.device) -> MLPINR:
-    """Recreate the trained INR architecture and load its parameters."""
+def build_model_from_checkpoint(checkpoint: dict, device: torch.device):
+    """Retained legacy public adapter; shared implementation preserves xyt policy.
 
-    cfg = checkpoint.get("config", {})
-
-    coord_scalers = checkpoint.get("coord_scalers")
-    target_scaler = checkpoint.get("target_scaler")
-
-    if coord_scalers is None:
-        raise KeyError("Checkpoint is missing coord_scalers.")
-    if target_scaler is None:
-        raise KeyError("Checkpoint is missing target_scaler.")
-
-    in_features = len(coord_scalers)
-    out_features = 1
-
-    model = MLPINR(
-        in_features=in_features,
-        out_features=out_features,
-        hidden_features=int(cfg.get("hidden_features", 256)),
-        hidden_layers=int(cfg.get("hidden_layers", 3)),
-        activation=str(cfg.get("activation", "sine")),
-        first_omega_0=float(cfg.get("first_omega_0", 5.0)),
-        hidden_omega_0=float(cfg.get("hidden_omega_0", 5.0)),
-        outermost_linear=True,
-    ).to(device)
-
-    model.load_state_dict(checkpoint["model_state_dict"])
-    model.eval()
-    return model
+    See inr_isr checkpoints/transforms/prediction for shapes, units, errors, RNG
+    and side effects. Gradient/truth/plot analysis remains the native recipe.
+    """
+    return _build_model_from_checkpoint(checkpoint, device)
 
 
 def patches_from_config(config: dict) -> list[MovingGaussianPatch]:
@@ -227,58 +213,31 @@ def patches_from_config(config: dict) -> list[MovingGaussianPatch]:
     return patches
 
 
-def denormalize_target(pred_norm: np.ndarray, target_scaler: dict) -> np.ndarray:
-    """Convert normalized output back to log10 electron density."""
+def denormalize_target(pred_norm: np.ndarray, target_scaler: dict):
+    """Retained legacy public adapter; shared implementation preserves xyt policy.
 
-    values_norm = np.asarray(pred_norm, dtype=np.float64)
-    vmin = float(target_scaler["min"])
-    vmax = float(target_scaler["max"])
-    return 0.5 * (values_norm + 1.0) * (vmax - vmin) + vmin
-
-
-def normalize_coords_from_scalers(
-    x_km: np.ndarray,
-    y_km: np.ndarray,
-    t_sec: np.ndarray,
-    coord_scalers: dict,
-) -> np.ndarray:
-    """Normalize physical x-y-time coordinates with checkpoint scalers."""
-
-    x_min = float(coord_scalers["x_km"]["min"])
-    x_max = float(coord_scalers["x_km"]["max"])
-    y_min = float(coord_scalers["y_km"]["min"])
-    y_max = float(coord_scalers["y_km"]["max"])
-    t_min = float(coord_scalers["t_sec"]["min"])
-    t_max = float(coord_scalers["t_sec"]["max"])
-
-    x_norm = 2.0 * (x_km - x_min) / (x_max - x_min) - 1.0
-    y_norm = 2.0 * (y_km - y_min) / (y_max - y_min) - 1.0
-    t_norm = 2.0 * (t_sec - t_min) / (t_max - t_min) - 1.0
-
-    return np.column_stack([x_norm.ravel(), y_norm.ravel(), t_norm.ravel()]).astype(np.float32)
+    See inr_isr checkpoints/transforms/prediction for shapes, units, errors, RNG
+    and side effects. Gradient/truth/plot analysis remains the native recipe.
+    """
+    return _denormalize_target(pred_norm, target_scaler)
 
 
-def predict_log10_on_coords(
-    model: torch.nn.Module,
-    coords_norm: np.ndarray,
-    target_scaler: dict,
-    device: torch.device,
-    chunk_size: int,
-) -> np.ndarray:
-    """Evaluate log10 density in chunks without coordinate gradients."""
+def normalize_coords_from_scalers(x_km: np.ndarray, y_km: np.ndarray, t_sec: np.ndarray, coord_scalers: dict):
+    """Retained legacy public adapter; shared implementation preserves xyt policy.
 
-    outputs = []
-    n = coords_norm.shape[0]
+    See inr_isr checkpoints/transforms/prediction for shapes, units, errors, RNG
+    and side effects. Gradient/truth/plot analysis remains the native recipe.
+    """
+    return _normalize_coords_from_scalers(x_km, y_km, t_sec, coord_scalers)
 
-    with torch.no_grad():
-        for start in range(0, n, chunk_size):
-            end = min(start + chunk_size, n)
-            coords = torch.from_numpy(coords_norm[start:end]).to(device)
-            pred_norm = model(coords).detach().cpu().numpy()
-            outputs.append(pred_norm)
 
-    pred_norm_all = np.concatenate(outputs, axis=0)[:, 0]
-    return denormalize_target(pred_norm_all, target_scaler=target_scaler)
+def predict_log10_on_coords(model: torch.nn.Module, coords_norm: np.ndarray, target_scaler: dict, device: torch.device, chunk_size: int):
+    """Retained legacy public adapter; shared implementation preserves xyt policy.
+
+    See inr_isr checkpoints/transforms/prediction for shapes, units, errors, RNG
+    and side effects. Gradient/truth/plot analysis remains the native recipe.
+    """
+    return _predict_log10_on_coords(model, coords_norm, target_scaler, device, chunk_size)
 
 
 def predict_log10_and_gradients_on_coords(
@@ -289,80 +248,14 @@ def predict_log10_and_gradients_on_coords(
     device: torch.device,
     chunk_size: int,
 ) -> dict[str, np.ndarray]:
-    """
-    Evaluate model log10(Ne) and first derivatives with respect to physical units.
-
-    The model outputs normalized log10(Ne) as a function of normalized coords.
-    Convert derivatives using chain rule:
-
-        d log10Ne / dx_km
-        = target_scale * d pred_norm / d x_norm * d x_norm / dx_km
-    """
-
-    pred_list = []
-    dx_list = []
-    dy_list = []
-    dt_list = []
-
-    target_scale = 0.5 * (float(target_scaler["max"]) - float(target_scaler["min"]))
-
-    dxnorm_dx = 2.0 / (float(coord_scalers["x_km"]["max"]) - float(coord_scalers["x_km"]["min"]))
-    dynorm_dy = 2.0 / (float(coord_scalers["y_km"]["max"]) - float(coord_scalers["y_km"]["min"]))
-    dtnorm_dt = 2.0 / (float(coord_scalers["t_sec"]["max"]) - float(coord_scalers["t_sec"]["min"]))
-
-    n = coords_norm.shape[0]
-
-    for start in range(0, n, chunk_size):
-        end = min(start + chunk_size, n)
-
-        coords = torch.from_numpy(coords_norm[start:end]).to(device)
-        coords = coords.detach().clone().requires_grad_(True)
-
-        pred_norm = model(coords)
-
-        grad_norm = torch.autograd.grad(
-            outputs=pred_norm,
-            inputs=coords,
-            grad_outputs=torch.ones_like(pred_norm),
-            create_graph=False,
-            retain_graph=False,
-            only_inputs=True,
-        )[0]
-
-        pred_log10 = denormalize_target(
-            pred_norm.detach().cpu().numpy()[:, 0],
-            target_scaler=target_scaler,
-        )
-
-        pred_list.append(pred_log10)
-        dx_list.append((target_scale * grad_norm[:, 0].detach().cpu().numpy() * dxnorm_dx).astype(np.float64))
-        dy_list.append((target_scale * grad_norm[:, 1].detach().cpu().numpy() * dynorm_dy).astype(np.float64))
-        dt_list.append((target_scale * grad_norm[:, 2].detach().cpu().numpy() * dtnorm_dt).astype(np.float64))
-
-    return {
-        "pred_log10_Ne": np.concatenate(pred_list, axis=0),
-        "pred_dlog10Ne_dx_km": np.concatenate(dx_list, axis=0),
-        "pred_dlog10Ne_dy_km": np.concatenate(dy_list, axis=0),
-        "pred_dlog10Ne_dt_sec": np.concatenate(dt_list, axis=0),
-    }
+    """Keep the public xyt gradient API; the shared chain rule owns the work."""
+    return _predict_log10_and_gradients_on_coords(
+        model, coords_norm, coord_scalers, target_scaler, device, chunk_size)
 
 
 def compute_metrics(error: np.ndarray, prefix: str = "") -> dict[str, float]:
     """Summarize one error vector with stable prefixed column names."""
-
-    error = np.asarray(error, dtype=np.float64)
-    abs_error = np.abs(error)
-
-    out = {
-        f"{prefix}mse": float(np.mean(error ** 2)),
-        f"{prefix}rmse": float(np.sqrt(np.mean(error ** 2))),
-        f"{prefix}mae": float(np.mean(abs_error)),
-        f"{prefix}bias": float(np.mean(error)),
-        f"{prefix}max_abs": float(np.max(abs_error)),
-        f"{prefix}p95_abs": float(np.quantile(abs_error, 0.95)),
-        f"{prefix}p99_abs": float(np.quantile(abs_error, 0.99)),
-    }
-    return out
+    return _compute_error_metrics(error, prefix)
 
 
 def select_time_indices(
@@ -370,25 +263,7 @@ def select_time_indices(
     selection: str | list[int] = TIME_SELECTION,
 ) -> list[int]:
     """Resolve explicit or named time selection against available records."""
-
-    available = [int(x) for x in np.sort(obs_df["time_index"].unique())]
-
-    if isinstance(selection, list):
-        requested = [int(x) for x in selection]
-        missing = sorted(set(requested) - set(available))
-        if missing:
-            raise ValueError(f"Requested time_index values are unavailable: {missing}")
-        return requested
-
-    if selection == "all":
-        return available
-
-    if selection == "first_middle_last":
-        if len(available) <= 3:
-            return available
-        return [available[0], available[len(available) // 2], available[-1]]
-
-    raise ValueError(f"Unsupported time selection: {selection}")
+    return _select_analyzer_time_indices(obs_df, selection, "time selection")
 
 
 def make_dense_grid(
@@ -399,29 +274,8 @@ def make_dense_grid(
     domain_mode: str = DOMAIN_MODE,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Build the configured full-domain or training-extent mesh."""
-
-    if domain_mode == "full_domain":
-        half = 0.5 * float(config["domain_size_km"])
-        x = np.linspace(-half, half, int(grid_nx), dtype=np.float64)
-        y = np.linspace(-half, half, int(grid_ny), dtype=np.float64)
-    elif domain_mode == "training_extent":
-        x = np.linspace(
-            float(coord_scalers["x_km"]["min"]),
-            float(coord_scalers["x_km"]["max"]),
-            int(grid_nx),
-            dtype=np.float64,
-        )
-        y = np.linspace(
-            float(coord_scalers["y_km"]["min"]),
-            float(coord_scalers["y_km"]["max"]),
-            int(grid_ny),
-            dtype=np.float64,
-        )
-    else:
-        raise ValueError(f"Unsupported domain mode: {domain_mode}")
-
-    X, Y = np.meshgrid(x, y)
-    return X, Y
+    return _make_analyzer_dense_grid(
+        config, coord_scalers, grid_nx, grid_ny, domain_mode, "domain mode")
 
 
 def plot_truth_pred_error(

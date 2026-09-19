@@ -9,18 +9,11 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+from inr_isr.transforms import affine_forward, affine_inverse
+from inr_isr.data.arrays import immutable_array as _immutable_array
+
 
 COORDINATE_NAMES = ("x_km", "y_km", "z_km", "t_sec")
-
-
-def _immutable_array(value: np.ndarray, *, ndim: int, name: str) -> np.ndarray:
-    array = np.asarray(value).copy()
-    if array.ndim != ndim:
-        raise ValueError(f"{name} must have {ndim} dimensions, got {array.ndim}.")
-    if not np.all(np.isfinite(array)):
-        raise ValueError(f"{name} contains non-finite values.")
-    array.setflags(write=False)
-    return array
 
 
 @dataclass(frozen=True)
@@ -106,16 +99,24 @@ class AffineScaler:
         return cls(values.min(axis=0), values.max(axis=0))
 
     def transform(self, values: np.ndarray) -> np.ndarray:
+        """Map physical[...,C] with train-fitted spans; retain dtype/column errors.
+
+        No clipping/fit/mutation/RNG; shared affine arithmetic, native validation.
+        """
         values_array = np.asarray(values)
         if values_array.shape[-1] != self.minimum.size:
             raise ValueError("Input column count does not match this scaler.")
-        return 2.0 * (values_array - self.minimum) / (self.maximum - self.minimum) - 1.0
+        return affine_forward(values_array, self.minimum, self.maximum)
 
     def inverse_transform(self, values: np.ndarray) -> np.ndarray:
+        """Return physical[...,C] units/logdensity, not linear density.
+
+        Native column validation precedes shared arithmetic; no clipping/RNG.
+        """
         values_array = np.asarray(values)
         if values_array.shape[-1] != self.minimum.size:
             raise ValueError("Input column count does not match this scaler.")
-        return 0.5 * (values_array + 1.0) * (self.maximum - self.minimum) + self.minimum
+        return affine_inverse(values_array, self.minimum, self.maximum)
 
     def state_dict(self) -> dict[str, list[float]]:
         return {"minimum": self.minimum.tolist(), "maximum": self.maximum.tolist()}

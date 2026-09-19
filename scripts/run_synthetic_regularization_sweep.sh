@@ -1,16 +1,14 @@
 #!/usr/bin/env bash
 set -eo pipefail
 
-source /home/jdiaz/miniconda3/etc/profile.d/conda.sh
-conda activate base
-set -u
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/project_environment.sh" "$@"
+set -u
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
 
 SYNTHETIC_CSV="outputs/synthetic_high_amp_left_right/synthetic_observations.csv"
-PYTHON_BIN="${PYTHON_BIN:-python}"
+PYTHON_BIN="$INR_ISR_PYTHON"
 TRAIN_SCRIPT="src/synthetic_train_3d.py"
 
 mkdir -p logs outputs

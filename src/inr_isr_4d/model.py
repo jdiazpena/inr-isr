@@ -23,6 +23,11 @@ class SIREN4D(MLPINR):
         hidden_omega_0: float = 5.0,
         outermost_linear: bool = True,
     ) -> None:
+        """Fix D=4, forwarding all options/defaults to the original MLPINR.
+
+        Input order(x,y,z,t) is the data contract; no added layers/RNG/prefixes,
+        transformations or loss decisions. Output remains configured[N,C].
+        """
         super().__init__(
             in_features=4,
             out_features=out_features,

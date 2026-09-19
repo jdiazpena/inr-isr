@@ -13,6 +13,10 @@ from typing import Any
 import numpy as np
 import torch
 
+from inr_isr.checkpoints import torch_load_checkpoint
+from inr_isr.model import build_model, restore_parameters
+from inr_isr.prediction import predict_normalized
+
 from .checkpoint import atomic_json_save
 from .config import FourDConfig, config_from_mapping
 from .conformal import (
@@ -58,46 +62,42 @@ def point_metrics(predictions: np.ndarray, targets: np.ndarray) -> dict[str, flo
     }
 
 
-def predict_chunked(
-    model: torch.nn.Module,
-    physical_coordinates: np.ndarray,
-    coordinate_scaler: AffineScaler,
-    target_scaler: AffineScaler,
-    *,
-    device: torch.device,
-    dtype: torch.dtype,
-    chunk_size: int,
-) -> np.ndarray:
+def predict_chunked(model: torch.nn.Module, physical_coordinates: np.ndarray,
+                    coordinate_scaler: AffineScaler, target_scaler: AffineScaler,
+                    *, device: torch.device, dtype: torch.dtype, chunk_size: int) -> np.ndarray:
+    """xyzt physical[N,4]→physical[N,C] logdensity with saved train-fitted maps.
+
+    Validate positive chunk before normalization; preserve eval side effect,
+    explicit dtype/device conversion and native inverse. Same partial final
+    chunk, no clipping/RNG/fit. Empty arrays retain original concatenate error.
+    """
     if chunk_size <= 0:
         raise ValueError("Prediction chunk size must be positive.")
     normalized = coordinate_scaler.transform(np.asarray(physical_coordinates))
-    predictions = []
     model.eval()
-    with torch.no_grad():
-        for begin in range(0, len(normalized), chunk_size):
-            coordinates = torch.as_tensor(
-                normalized[begin : begin + chunk_size], dtype=dtype, device=device
-            )
-            predictions.append(model(coordinates).detach().cpu().numpy())
-    normalized_prediction = np.concatenate(predictions, axis=0)
+    normalized_prediction = predict_normalized(model, normalized, device=device,
+                                               dtype=dtype, chunk_size=chunk_size)
     return target_scaler.inverse_transform(normalized_prediction)
 
 
-def load_trained_model(
-    checkpoint_path: Path,
-) -> tuple[SIREN4D, FourDConfig, dict[str, Any], torch.device, torch.dtype]:
-    state = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+def load_trained_model(checkpoint_path: Path, *, device_policy: str = "cuda") -> tuple[SIREN4D, FourDConfig, dict[str, Any], torch.device, torch.dtype]:
+    """Trusted old4D checkpoint→model/config/state/device/dtype, original schema.
+
+    Keep strict resolved_config, CPU state read and model key. Execution device
+    is selected independently of the saved training device; checkpoint metadata
+    is neither changed nor used as an implicit CPU inference request.
+    Unlike3D analyzer load, the returned model remains in its original training
+    mode until prediction calls eval. No UQ identity/calibration checks bypassed.
+    Construction/RNG and parameter keys remain the unchanged SIREN4D policy.
+    """
+    state = torch_load_checkpoint(checkpoint_path, "cpu", legacy_keyword_fallback=False)
     config = config_from_mapping(state["resolved_config"])
-    device = resolve_device(config.runtime.device)
+    device = resolve_device(device_policy)
     dtype = torch.float32 if config.runtime.precision == "float32" else torch.float64
-    model = SIREN4D(
-        hidden_features=config.model.hidden_features,
-        hidden_layers=config.model.hidden_layers,
-        activation=config.model.activation,
-        first_omega_0=config.model.first_omega_0,
-        hidden_omega_0=config.model.hidden_omega_0,
-    ).to(device=device, dtype=dtype)
-    model.load_state_dict(state["model"])
+    model = build_model("xyzt", hidden_features=config.model.hidden_features,
+                        hidden_layers=config.model.hidden_layers, activation=config.model.activation,
+                        first_omega_0=config.model.first_omega_0, hidden_omega_0=config.model.hidden_omega_0)
+    model = restore_parameters(model, state, device=device, dtype=dtype, parameter_key="model")
     return model, config, state, device, dtype
 
 
@@ -187,6 +187,7 @@ def calibrate_checkpoint(
     checkpoint_path: Path,
     calibration_path: Path,
     alpha: float,
+    device_policy: str = "cuda",
 ) -> dict[str, object]:
     """Run only conformal calibration; do not inspect test targets."""
 
@@ -195,7 +196,8 @@ def calibrate_checkpoint(
         raise FileExistsError(f"Calibration artifact already exists: {calibration_path}")
     if len(split.calibration_indices) == 0:
         raise ValueError("Conformal calibration split is empty.")
-    model, config, checkpoint, device, dtype = load_trained_model(checkpoint_path)
+    model, config, checkpoint, device, dtype = load_trained_model(
+        checkpoint_path, device_policy=device_policy)
     _validate_checkpoint_contract(checkpoint, split, coordinate_scaler, target_scaler)
     calibration_bundle = bundle.subset(split.calibration_indices)
     predictions = predict_chunked(
@@ -231,6 +233,7 @@ def evaluate_checkpoint(
     calibration_path: Path,
     output_directory: Path,
     bootstrap_repetitions: int = 200,
+    device_policy: str = "cuda",
 ) -> dict[str, Any]:
     """Evaluate untouched test groups using an already saved calibration artifact."""
 
@@ -239,7 +242,8 @@ def evaluate_checkpoint(
         raise FileExistsError(f"Evaluation directory already exists: {output_directory}")
     if len(split.test_indices) == 0:
         raise ValueError("Conformal test split is empty.")
-    model, config, checkpoint, device, dtype = load_trained_model(checkpoint_path)
+    model, config, checkpoint, device, dtype = load_trained_model(
+        checkpoint_path, device_policy=device_policy)
     _validate_checkpoint_contract(checkpoint, split, coordinate_scaler, target_scaler)
     with Path(calibration_path).open("r", encoding="utf-8") as handle:
         calibration = calibration_from_state(json.load(handle))
@@ -345,6 +349,7 @@ def calibrate_and_evaluate(
     output_directory: Path,
     alpha: float,
     bootstrap_repetitions: int = 200,
+    device_policy: str = "cuda",
 ) -> dict[str, Any]:
     """Calibrate on saved calibration groups, then evaluate untouched test groups once."""
 
@@ -353,7 +358,8 @@ def calibrate_and_evaluate(
         raise FileExistsError(f"Evaluation directory is not empty: {output_directory}")
     if len(split.calibration_indices) == 0 or len(split.test_indices) == 0:
         raise ValueError("Conformal calibration and test splits must both be non-empty.")
-    model, config, checkpoint, device, dtype = load_trained_model(checkpoint_path)
+    model, config, checkpoint, device, dtype = load_trained_model(
+        checkpoint_path, device_policy=device_policy)
     if checkpoint["splits"] != split.state_dict():
         raise ValueError("The checkpoint split does not match the evaluation split.")
     expected_preprocessing = {

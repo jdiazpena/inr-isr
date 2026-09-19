@@ -364,6 +364,7 @@ def run_case_stage(
             checkpoint_path=checkpoint,
             calibration_path=path,
             alpha=float(case["conformal"]["alpha"]),
+            device_policy=config.runtime.device,
         )
         return {"stage": stage, "status": "complete"}
 
@@ -395,6 +396,7 @@ def run_case_stage(
             calibration_path=calibration,
             output_directory=directory / "evaluation",
             bootstrap_repetitions=int(case["conformal"]["bootstrap_repetitions"]),
+            device_policy=config.runtime.device,
         )
         if case["data"]["type"] == "synthetic":
             field_values = dict(case["data"]["field"])
@@ -422,6 +424,7 @@ def run_case_stage(
                 output_directory=directory / "synthetic_truth",
                 truth_count=int(truth_settings.get("count", 1024)),
                 truth_seed=int(case["split"]["seed"]) + int(truth_settings.get("seed_offset", 100000)),
+                device_policy=config.runtime.device,
             )
         return {"stage": stage, "status": "complete"}
 

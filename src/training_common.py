@@ -10,6 +10,11 @@ are smoothness priors, not a physical PDE.
 from __future__ import annotations
 
 import csv
+from inr_isr.training.sampling import without_replacement_indices
+from inr_isr.training import controllers as _controllers, state as _state
+from inr_isr.transforms import affine_forward
+from inr_isr.prediction import predict_normalized
+from inr_isr.training.derivatives import coordinate_gradient, hessian_rows
 from pathlib import Path
 from typing import Protocol
 
@@ -37,17 +42,8 @@ def set_seed(seed: int) -> None:
 
 
 def append_csv_row(path: Path, fieldnames: list[str], row: dict) -> None:
-    """Append one stable-schema training-history row, creating its header once."""
-
-    file_exists = path.exists()
-
-    with open(path, "a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-
-        if not file_exists:
-            writer.writeheader()
-
-        writer.writerow(row)
+    """Append native xyt history with its existing header/schema and file behavior."""
+    return _state.append_csv_row(path, fieldnames, row)
 
 
 def sample_batch(
@@ -59,10 +55,7 @@ def sample_batch(
 
     n_samples = coords.shape[0]
 
-    if batch_size <= 0 or batch_size >= n_samples:
-        idx = torch.arange(n_samples, device=coords.device)
-    else:
-        idx = torch.randperm(n_samples, device=coords.device)[:batch_size]
+    idx = without_replacement_indices(n_samples, batch_size, device=coords.device)
 
     return coords[idx], values[idx]
 
@@ -101,18 +94,8 @@ def ramp_weight(
     num_steps: int,
     ramp_frac: float,
 ) -> float:
-    """Linearly introduce a regularization weight during the initial ramp."""
-
-    if target_weight <= 0.0:
-        return 0.0
-
-    if ramp_frac <= 0.0:
-        return float(target_weight)
-
-    ramp_steps = max(1, int(ramp_frac * num_steps))
-    factor = min(1.0, step / ramp_steps)
-
-    return float(target_weight * factor)
+    """Retain the public xyt scalar policy; shared implementation owns its arithmetic."""
+    return _controllers.ramp_weight(target_weight, step, num_steps, ramp_frac)
 
 
 def update_ema_scalar(
@@ -120,33 +103,13 @@ def update_ema_scalar(
     new_value: float,
     beta: float,
 ) -> float:
-    """
-    Exponential moving average for scalar diagnostics.
-
-    beta close to 1 gives a slow/stable average.
-    """
-
-    new_value = float(new_value)
-
-    if old_value is None or not np.isfinite(old_value):
-        return new_value
-
-    return float(beta * old_value + (1.0 - beta) * new_value)
+    """Retain the public xyt scalar policy; shared implementation owns its arithmetic."""
+    return _controllers.update_ema_scalar(old_value, new_value, beta)
 
 
 def clamp_float(value: float, min_value: float, max_value: float) -> float:
-    """
-    Clamp a float to [min_value, max_value].
-    """
-
-    value = float(value)
-    min_value = float(min_value)
-    max_value = float(max_value)
-
-    if max_value < min_value:
-        raise ValueError("max_value must be >= min_value")
-
-    return float(min(max(value, min_value), max_value))
+    """Retain the public xyt scalar policy; shared implementation owns its arithmetic."""
+    return _controllers.clamp_float(value, min_value, max_value)
 
 
 def safe_ratio(numer: float, denom: float, eps: float = 1e-30) -> float:
@@ -259,9 +222,9 @@ def normalize_xy_t_grid_with_dataset(
     t_min = dataset.coord_scalers["t_sec"]["min"]
     t_max = dataset.coord_scalers["t_sec"]["max"]
 
-    Xn = 2.0 * (X - x_min) / (x_max - x_min) - 1.0
-    Yn = 2.0 * (Y - y_min) / (y_max - y_min) - 1.0
-    Tn = 2.0 * (float(t_sec) - t_min) / (t_max - t_min) - 1.0
+    Xn = affine_forward(X, x_min, x_max)
+    Yn = affine_forward(Y, y_min, y_max)
+    Tn = affine_forward(float(t_sec), t_min, t_max)
 
     coords_grid = np.column_stack(
         [
@@ -359,10 +322,7 @@ def sample_collocation_points(
 
     n_total = collocation_pool.shape[0]
 
-    if num_collocation <= 0 or num_collocation >= n_total:
-        idx = torch.arange(n_total, device=collocation_pool.device)
-    else:
-        idx = torch.randperm(n_total, device=collocation_pool.device)[:num_collocation]
+    idx = without_replacement_indices(n_total, num_collocation, device=collocation_pool.device)
 
     return collocation_pool[idx]
 
@@ -394,14 +354,7 @@ def curvature_losses_xy_t(
 
     pred = model(coords_col)
 
-    grad = torch.autograd.grad(
-        outputs=pred,
-        inputs=coords_col,
-        grad_outputs=torch.ones_like(pred),
-        create_graph=True,
-        retain_graph=True,
-        only_inputs=True,
-    )[0]
+    grad = coordinate_gradient(pred, coords_col, only_inputs=True)
 
     zero = pred.new_tensor(0.0)
 
@@ -409,46 +362,18 @@ def curvature_losses_xy_t(
     curv_t = zero
 
     if use_xy:
-        fx = grad[:, 0:1]
-        fy = grad[:, 1:2]
-
-        grad_fx = torch.autograd.grad(
-            outputs=fx,
-            inputs=coords_col,
-            grad_outputs=torch.ones_like(fx),
-            create_graph=True,
-            retain_graph=True,
-            only_inputs=True,
-        )[0]
-
-        grad_fy = torch.autograd.grad(
-            outputs=fy,
-            inputs=coords_col,
-            grad_outputs=torch.ones_like(fy),
-            create_graph=True,
-            retain_graph=True,
-            only_inputs=True,
-        )[0]
-
-        fxx = grad_fx[:, 0:1]
-        fxy = grad_fx[:, 1:2]
-        fyy = grad_fy[:, 1:2]
+        rows = hessian_rows(grad, coords_col, axes=("x", "y", "t"),
+                            selected=("x", "y"), only_inputs=True)
+        fxx = rows["x"][:, 0:1]
+        fxy = rows["x"][:, 1:2]
+        fyy = rows["y"][:, 1:2]
 
         curv_xy = torch.mean(fxx ** 2 + 2.0 * fxy ** 2 + fyy ** 2)
 
     if use_t:
-        ft = grad[:, 2:3]
-
-        grad_ft = torch.autograd.grad(
-            outputs=ft,
-            inputs=coords_col,
-            grad_outputs=torch.ones_like(ft),
-            create_graph=True,
-            retain_graph=True,
-            only_inputs=True,
-        )[0]
-
-        ftt = grad_ft[:, 2:3]
+        rows_t = hessian_rows(grad, coords_col, axes=("x", "y", "t"),
+                              selected=("t",), only_inputs=True)
+        ftt = rows_t["t"][:, 2:3]
 
         curv_t = torch.mean(ftt ** 2)
 
@@ -523,14 +448,7 @@ def derivative_diagnostics_xy_t(
 
     pred = model(coords_col)
 
-    grad = torch.autograd.grad(
-        outputs=pred,
-        inputs=coords_col,
-        grad_outputs=torch.ones_like(pred),
-        create_graph=True,
-        retain_graph=True,
-        only_inputs=True,
-    )[0]
+    grad = coordinate_gradient(pred, coords_col, only_inputs=True)
 
     fxx = None
     fxy = None
@@ -541,48 +459,20 @@ def derivative_diagnostics_xy_t(
     diag_curv_t_probe = float("nan")
 
     if use_xy:
-        fx = grad[:, 0:1]
-        fy = grad[:, 1:2]
-
-        grad_fx = torch.autograd.grad(
-            outputs=fx,
-            inputs=coords_col,
-            grad_outputs=torch.ones_like(fx),
-            create_graph=True,
-            retain_graph=True,
-            only_inputs=True,
-        )[0]
-
-        grad_fy = torch.autograd.grad(
-            outputs=fy,
-            inputs=coords_col,
-            grad_outputs=torch.ones_like(fy),
-            create_graph=True,
-            retain_graph=True,
-            only_inputs=True,
-        )[0]
-
-        fxx = grad_fx[:, 0:1]
-        fxy = grad_fx[:, 1:2]
-        fyy = grad_fy[:, 1:2]
+        rows = hessian_rows(grad, coords_col, axes=("x", "y", "t"),
+                            selected=("x", "y"), only_inputs=True)
+        fxx = rows["x"][:, 0:1]
+        fxy = rows["x"][:, 1:2]
+        fyy = rows["y"][:, 1:2]
 
         diag_curv_xy_probe = float(
             torch.mean(fxx ** 2 + 2.0 * fxy ** 2 + fyy ** 2).detach().item()
         )
 
     if use_t:
-        ft = grad[:, 2:3]
-
-        grad_ft = torch.autograd.grad(
-            outputs=ft,
-            inputs=coords_col,
-            grad_outputs=torch.ones_like(ft),
-            create_graph=True,
-            retain_graph=True,
-            only_inputs=True,
-        )[0]
-
-        ftt = grad_ft[:, 2:3]
+        rows_t = hessian_rows(grad, coords_col, axes=("x", "y", "t"),
+                              selected=("t",), only_inputs=True)
+        ftt = rows_t["t"][:, 2:3]
 
         diag_curv_t_probe = float(torch.mean(ftt ** 2).detach().item())
 
@@ -654,31 +544,17 @@ def parameter_grad_norm_from_existing_grads(
 
 
 @torch.no_grad()
-def evaluate_model_on_coords(
-    model: torch.nn.Module,
-    coords_np: np.ndarray,
-    dataset: NormalizedTimeDataset,
-    device: torch.device,
-    chunk_size: int,
-) -> np.ndarray:
-    """Evaluate normalized coordinates in chunks and return log10 density."""
+def evaluate_model_on_coords(model: torch.nn.Module, coords_np: np.ndarray,
+                             dataset: NormalizedTimeDataset, device: torch.device,
+                             chunk_size: int) -> np.ndarray:
+    """xyt normalizedfloat32[N,3]→physicalfloat64[N] logdensity, same chunks.
 
+    Retain eval side effect and dataset inverse policy; one shared normalized
+    batching kernel does forward/detach/cpu. No RNG, clipping or data fitting.
+    """
     model.eval()
-
-    outputs = []
-    n = coords_np.shape[0]
-
-    for start in range(0, n, chunk_size):
-        end = min(start + chunk_size, n)
-
-        coords_chunk = torch.from_numpy(coords_np[start:end]).to(device)
-        pred_chunk = model(coords_chunk).detach().cpu().numpy()
-
-        outputs.append(pred_chunk)
-
-    pred_norm = np.concatenate(outputs, axis=0)
+    pred_norm = predict_normalized(model, coords_np, device=device, chunk_size=chunk_size)
     pred_log10 = dataset.denormalize_target(pred_norm)
-
     return pred_log10[:, 0]
 
 

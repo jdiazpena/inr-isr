@@ -77,7 +77,11 @@ from tqdm import tqdm
 
 from synthetic_dataset import SyntheticPlasmaTimeDataset
 from models import MLPINR
+from inr_isr.device import resolve_device, device_record
+from inr_isr.plotting import plot_xy_prediction_at_time as _plot_xy_prediction_at_time
 from training_config import parse_args_with_optional_json
+from inr_isr.training.controllers import update_xyt_weights
+from inr_isr.training.steps import data_objective, compose_xyt_loss, parameter_update
 from training_common import (
     append_csv_row,
     clamp_float,
@@ -197,114 +201,15 @@ def plot_xy_prediction_at_time(
     vmin: float,
     vmax: float,
 ) -> None:
-    df_time = df[df["time_index"] == time_index].copy()
-
-    if len(df_time) == 0:
-        raise ValueError(f"No dataframe rows for time_index={time_index}")
-
-    t_sec = float(df_time["t_sec"].median())
-    t_min = t_sec / 60.0
-    unix_mid = float(df_time["unix_mid"].median()) if "unix_mid" in df_time.columns else np.nan
-
-    X, Y = make_query_grid_from_points(
-        x_km=df["x_km"].to_numpy(dtype=float),
-        y_km=df["y_km"].to_numpy(dtype=float),
-        nx=grid_nx,
-        ny=grid_ny,
-        padding_frac=grid_padding_frac,
+    """Retain the public trainer plot API; shared owner preserves the product."""
+    return _plot_xy_prediction_at_time(
+        model=model, dataset=dataset, df=df, time_index=time_index,
+        out_dir=out_dir, device=device, grid_nx=grid_nx, grid_ny=grid_ny,
+        grid_padding_frac=grid_padding_frac,
+        nearest_radius_factor=nearest_radius_factor,
+        grid_chunk_size=grid_chunk_size, save_grid_csv=save_grid_csv,
+        vmin=vmin, vmax=vmax, title_prefix="Synthetic 3D window INR",
     )
-
-    measured_xy = df_time[["x_km", "y_km"]].to_numpy(dtype=float)
-
-    nearest_radius_km = estimate_nearest_radius(
-        measured_xy,
-        factor=nearest_radius_factor,
-    )
-
-    valid_mask, nearest_dist_grid = nearest_distance_mask(
-        X,
-        Y,
-        measured_xy,
-        radius_km=nearest_radius_km,
-    )
-
-    coords_grid_np = normalize_xy_t_grid_with_dataset(
-        dataset=dataset,
-        X=X,
-        Y=Y,
-        t_sec=t_sec,
-    )
-
-    pred_flat = evaluate_model_on_coords(
-        model=model,
-        coords_np=coords_grid_np,
-        dataset=dataset,
-        device=device,
-        chunk_size=grid_chunk_size,
-    )
-
-    pred_grid = pred_flat.reshape(X.shape)
-
-    pred_masked = pred_grid.copy()
-    pred_masked[~valid_mask] = np.nan
-
-    fig, ax = plt.subplots(figsize=(8, 7))
-
-    im = ax.pcolormesh(
-        X,
-        Y,
-        pred_masked,
-        shading="auto",
-        vmin=vmin,
-        vmax=vmax,
-    )
-
-    fig.colorbar(im, ax=ax, label="predicted log10(Ne)")
-
-    ax.scatter(
-        df_time["x_km"],
-        df_time["y_km"],
-        c=df_time["log10_Ne"],
-        s=35,
-        edgecolor="k",
-        linewidth=0.4,
-        vmin=vmin,
-        vmax=vmax,
-    )
-
-    ax.set_xlabel("x east [km]")
-    ax.set_ylabel("y north [km]")
-    ax.set_title(
-        f"Synthetic 3D window INR | time_index={time_index} | t={t_min:.1f} min"
-    )
-    ax.set_aspect("equal", adjustable="box")
-    ax.grid(True, alpha=0.3)
-
-    fig_path = out_dir / f"xy_time_index_{time_index:04d}.png"
-    fig.savefig(fig_path, dpi=200, bbox_inches="tight")
-    plt.close(fig)
-
-    print(f"Saved x-y time plot: {fig_path}")
-
-    if save_grid_csv:
-        grid_df = pd.DataFrame(
-            {
-                "time_index": np.full(X.size, int(time_index), dtype=int),
-                "unix_mid": np.full(X.size, unix_mid, dtype=float),
-                "t_sec": np.full(X.size, t_sec, dtype=float),
-                "t_min": np.full(X.size, t_min, dtype=float),
-                "x_km": X.ravel(),
-                "y_km": Y.ravel(),
-                "pred_log10_Ne": pred_grid.ravel(),
-                "nearest_dist_km": nearest_dist_grid.ravel(),
-                "valid_mask": valid_mask.ravel(),
-            }
-        )
-
-        csv_path = out_dir / f"grid_prediction_time_index_{time_index:04d}.csv"
-        grid_df.to_csv(csv_path, index=False)
-
-        print(f"Saved grid CSV: {csv_path}")
 
 
 # ============================================================
@@ -313,6 +218,7 @@ def plot_xy_prediction_at_time(
 
 def train(args: argparse.Namespace) -> None:
     set_seed(args.seed)
+    device = resolve_device("cpu" if args.cpu else "cuda")
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -328,10 +234,6 @@ def train(args: argparse.Namespace) -> None:
 
     with open(config_path, "w") as f:
         json.dump(config, f, indent=2)
-
-    device = torch.device(
-        "cuda" if torch.cuda.is_available() and not args.cpu else "cpu"
-    )
 
     print(f"Using device: {device}")
 
@@ -546,9 +448,13 @@ def train(args: argparse.Namespace) -> None:
             full_values,
             args.batch_size,
         )
+        if step == 1:
+            execution = device_record("cpu" if args.cpu else "cuda", device,
+                                      model=model, batch=batch_coords, dtype=batch_coords.dtype)
+            execution["target_device"] = str(batch_values.device)
+            (out_dir / "execution_device.json").write_text(json.dumps(execution, indent=2))
 
-        pred = model(batch_coords)
-        data_loss = F.mse_loss(pred, batch_values)
+        pred, data_loss = data_objective(model, batch_coords, batch_values, recipe="xyt")
 
         if use_xy_curv or use_t_curv:
             coords_col = sample_collocation_points(
@@ -575,102 +481,35 @@ def train(args: argparse.Namespace) -> None:
         curv_xy_scalar_current = float(curv_xy_raw.detach().item())
         curv_t_scalar_current = float(curv_t_raw.detach().item())
 
-        data_loss_ema = update_ema_scalar(
-            old_value=data_loss_ema,
-            new_value=data_scalar_current,
-            beta=args.loss_ema_beta,
-        )
-
-        curv_xy_raw_ema = update_ema_scalar(
-            old_value=curv_xy_raw_ema,
-            new_value=curv_xy_scalar_current,
-            beta=args.loss_ema_beta,
-        )
-
-        curv_t_raw_ema = update_ema_scalar(
-            old_value=curv_t_raw_ema,
-            new_value=curv_t_scalar_current,
-            beta=args.loss_ema_beta,
-        )
-
-        data_reference = max(float(data_loss_ema), float(args.epsilon_data))
-
-        # --------------------------------------------------------
-        # Reference-ratio lambda update.
-        #
-        # The controller targets weighted curvature terms relative to
-        # data_reference, not relative to the collapsing instantaneous
-        # data loss.
-        # --------------------------------------------------------
-        lambda_update_active = False
-
-        if args.reference_loss_weights:
-            if use_xy_curv and curv_xy_raw_ema > args.curvature_ema_floor:
-                lambda_curv_xy_target = (
-                    args.target_xy_ratio * data_reference / curv_xy_raw_ema
-                )
-                lambda_curv_xy_target = clamp_float(
-                    lambda_curv_xy_target,
-                    args.lambda_curv_xy_min,
-                    args.lambda_curv_xy_max,
-                )
-            else:
-                lambda_curv_xy_target = 0.0
-
-            if use_t_curv and curv_t_raw_ema > args.curvature_ema_floor:
-                lambda_curv_t_target = (
-                    args.target_t_ratio * data_reference / curv_t_raw_ema
-                )
-                lambda_curv_t_target = clamp_float(
-                    lambda_curv_t_target,
-                    args.lambda_curv_t_min,
-                    args.lambda_curv_t_max,
-                )
-            else:
-                lambda_curv_t_target = 0.0
-
-            if args.freeze_lambdas_after_step > 0 and step >= args.freeze_lambdas_after_step:
-                lambda_frozen = True
-
-            can_update = (
-                step > args.lambda_warmup_steps
-                and not lambda_frozen
-                and (step % args.lambda_update_every == 0 or step == 1)
-            )
-
-            if can_update:
-                lambda_update_active = True
-
-                s = float(args.lambda_smoothing)
-
-                lambda_curv_xy_base = (
-                    (1.0 - s) * lambda_curv_xy_base
-                    + s * lambda_curv_xy_target
-                )
-
-                lambda_curv_t_base = (
-                    (1.0 - s) * lambda_curv_t_base
-                    + s * lambda_curv_t_target
-                )
-        else:
-            lambda_curv_xy_base = float(args.lambda_curv_xy)
-            lambda_curv_t_base = float(args.lambda_curv_t)
-            lambda_curv_xy_target = float(args.lambda_curv_xy)
-            lambda_curv_t_target = float(args.lambda_curv_t)
-
-        lambda_curv_xy_eff = ramp_weight(
-            target_weight=lambda_curv_xy_base,
+        # Shared pre-update policy; keep named locals for native history/save semantics.
+        weight_state = update_xyt_weights(args,
             step=step,
-            num_steps=args.num_steps,
-            ramp_frac=args.reg_ramp_frac,
+            use_xy_curv=use_xy_curv,
+            use_t_curv=use_t_curv,
+            data_scalar_current=data_scalar_current,
+            curv_xy_scalar_current=curv_xy_scalar_current,
+            curv_t_scalar_current=curv_t_scalar_current,
+            data_loss_ema=data_loss_ema,
+            curv_xy_raw_ema=curv_xy_raw_ema,
+            curv_t_raw_ema=curv_t_raw_ema,
+            lambda_curv_xy_base=lambda_curv_xy_base,
+            lambda_curv_t_base=lambda_curv_t_base,
+            lambda_curv_xy_target=lambda_curv_xy_target,
+            lambda_curv_t_target=lambda_curv_t_target,
+            lambda_frozen=lambda_frozen,
         )
-
-        lambda_curv_t_eff = ramp_weight(
-            target_weight=lambda_curv_t_base,
-            step=step,
-            num_steps=args.num_steps,
-            ramp_frac=args.reg_ramp_frac,
-        )
+        data_loss_ema = weight_state['data_loss_ema']
+        curv_xy_raw_ema = weight_state['curv_xy_raw_ema']
+        curv_t_raw_ema = weight_state['curv_t_raw_ema']
+        lambda_curv_xy_base = weight_state['lambda_curv_xy_base']
+        lambda_curv_t_base = weight_state['lambda_curv_t_base']
+        lambda_curv_xy_target = weight_state['lambda_curv_xy_target']
+        lambda_curv_t_target = weight_state['lambda_curv_t_target']
+        lambda_frozen = weight_state['lambda_frozen']
+        data_reference = weight_state['data_reference']
+        lambda_update_active = weight_state['lambda_update_active']
+        lambda_curv_xy_eff = weight_state['lambda_curv_xy_eff']
+        lambda_curv_t_eff = weight_state['lambda_curv_t_eff']
 
         curv_xy_weighted = lambda_curv_xy_eff * curv_xy_raw
         curv_t_weighted = lambda_curv_t_eff * curv_t_raw
@@ -689,7 +528,7 @@ def train(args: argparse.Namespace) -> None:
         # total_loss.backward()
         # optimizer.step()
 
-        total_loss = data_loss + curv_xy_weighted + curv_t_weighted
+        total_loss = compose_xyt_loss(data_loss, curv_xy_weighted, curv_t_weighted)
 
         # --------------------------------------------------------
         # Save best checkpoints after the regularization ramp.
@@ -773,9 +612,8 @@ def train(args: argparse.Namespace) -> None:
                     best_data_path,
                 )
 
-        optimizer.zero_grad(set_to_none=True)
-        total_loss.backward()
-        optimizer.step()
+        # Ordered shared xyt update; best saves/component probes already happened.
+        parameter_update(optimizer, recipe="xyt", total_loss=total_loss)
 
         if step == 1 or step % args.summary_every == 0 or step == args.num_steps:
             model.eval()

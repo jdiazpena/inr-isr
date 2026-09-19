@@ -1,3 +1,7 @@
+Created: Unknown (historical repository document)
+Last edited: 2026-09-14
+Status: Active launcher guide; dedicated environment selection implemented
+
 # Experiment Scripts
 
 This folder contains entry points that coordinate the scientific code in `src/`.
@@ -17,6 +21,11 @@ root automatically.
 | `run_reference_windows_diagnostics_minimal.py` | Repeated real-radar windows with derivative diagnostics |
 | `run_tests.sh` | Compilation, characterization, real-reader, and synthetic smoke tests |
 
-Shell launchers activate `/home/jdiaz/miniconda3` before enabling strict Bash variable
-checking. Python workflows run one case at a time unless their documentation says
-otherwise.
+The four shell launchers source `project_environment.sh`, activate `inr-isr` under
+`/home/jdiaz/miniconda3`, verify interpreter ownership, then enable strict Bash
+variable checking. They never activate or fall back to base. All scientific Python
+commands use the checked interpreter; a PYTHON_BIN override outside inr-isr is
+rejected before any workload. `--check-environment` prints interpreter/version and
+exits before tests, generation, training or benchmark work. Other workload settings
+and outputs are unchanged; numerical equivalence under upgraded dependencies has
+not been established. Python workflows run one case at a time unless documented otherwise.

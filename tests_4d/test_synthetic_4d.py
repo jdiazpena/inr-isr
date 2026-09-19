@@ -80,7 +80,7 @@ def test_integration_averaged_target_uses_declared_trapezoid(duration: float) ->
         shifted = coordinates.copy()
         shifted[:, 3] += offset
         samples.append(evaluate_synthetic_truth(shifted, field)["Ne"][0])
-    expected = np.trapz(samples, offsets) / duration
+    expected = np.trapezoid(samples, offsets) / duration
     assert result["Ne"][0] == pytest.approx(expected, rel=1e-14)
     assert result["log10_Ne"][0] == pytest.approx(np.log10(expected), rel=1e-14)
     assert result["Ne"][0] != pytest.approx(result["instantaneous_Ne"][0], rel=1e-4)

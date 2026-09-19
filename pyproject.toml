@@ -18,8 +18,25 @@ inr-isr-4d = "inr_isr_4d.runner:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-py-modules = ["models"]
+py-modules = [
+  "amisr_h5_reader_3d",
+  "datasets",
+  "models",
+  "synthetic_analyze_reconstruction",
+  "synthetic_analyze_reconstruction_log_errors",
+  "synthetic_analyze_reconsturction",
+  "synthetic_analyze_reconsturction_linear_errors",
+  "synthetic_dataset",
+  "synthetic_plasma",
+  "synthetic_train_3d",
+  "synthetic_train_3d_window_reference_reg",
+  "train_radar_3d_window_reference_reg_diagnostic",
+  "train_radar_3d_window_reg",
+  "training_common",
+  "training_config",
+  "training_engine",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["inr_isr_4d*"]
+include = ["inr_isr_4d*", "inr_isr*"]

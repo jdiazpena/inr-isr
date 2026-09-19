@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
+from inr_isr.training.sampling import without_replacement_indices
 
 
 @dataclass(frozen=True)
@@ -23,7 +24,8 @@ class CollocationPool4D:
         if count <= 0 or count > len(self.coordinates):
             raise ValueError("Requested collocation batch count is invalid.")
         generator = torch.Generator(device="cpu").manual_seed(self.seed + step)
-        indices = torch.randperm(len(self.coordinates), generator=generator)[:count]
+        indices = without_replacement_indices(len(self.coordinates), count, generator=generator,
+                                               full_when_nonpositive=False, full_when_equal=False)
         return self.coordinates[indices]
 
     def __len__(self) -> int:

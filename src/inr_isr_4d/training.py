@@ -13,6 +13,10 @@ from pathlib import Path
 from typing import Any
 from collections.abc import Sequence
 
+from inr_isr.training.sampling import without_replacement_indices, microbatch_starts
+from inr_isr.training.steps import data_objective, parameter_update
+from inr_isr.training.state import full_xyzt_checkpoint
+from inr_isr.device import resolve_device, device_record
 import numpy as np
 import torch
 
@@ -52,17 +56,6 @@ class TrainingResult4D:
     best_data_loss: float
 
 
-def resolve_device(policy: str) -> torch.device:
-    if policy == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    device = torch.device(policy)
-    if device.type == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError(f"CUDA device {policy} was requested but CUDA is unavailable.")
-    if device.type == "cuda" and device.index is not None and device.index >= torch.cuda.device_count():
-        raise RuntimeError(f"CUDA device index {device.index} is unavailable.")
-    return device
-
-
 def _seed_everything(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -72,10 +65,9 @@ def _seed_everything(seed: int) -> None:
 
 
 def _batch_indices(count: int, batch_size: int, seed: int) -> torch.Tensor:
+    """Use the original per-step CPU generator, full/equal rule and slicing contract."""
     generator = torch.Generator(device="cpu").manual_seed(seed)
-    if batch_size >= count:
-        return torch.arange(count)
-    return torch.randperm(count, generator=generator)[:batch_size]
+    return without_replacement_indices(count, batch_size, generator=generator, full_when_nonpositive=False)
 
 
 def _append_jsonl(path: Path, record: dict[str, Any]) -> None:
@@ -143,23 +135,10 @@ def _checkpoint_state(
     controller: ReferenceRatioController,
     additional_constraints: tuple[Constraint4D, ...],
 ) -> dict[str, Any]:
-    return {
-        "schema_version": 1,
-        "model": model.state_dict(),
-        "optimizer": optimizer.state_dict(),
-        "scheduler": None,
-        "next_step": next_step,
-        "best_metrics": {"data_loss": best_data_loss},
-        "preprocessing": {
-            "coordinates": problem.coordinate_scaler.state_dict(),
-            "targets": problem.target_scaler.state_dict(),
-        },
-        "splits": problem.split_state,
-        "adaptive_controller": controller.state_dict(),
-        "additional_constraints": constraint_identities(additional_constraints),
-        "resolved_config": config.to_dict(),
-        "rng": capture_rng_state(),
-    }
+    """Keep native payload API/order; shared state builder owns the full schema."""
+    return full_xyzt_checkpoint(model=model, optimizer=optimizer, next_step=next_step,
+        best_data_loss=best_data_loss, problem=problem, config=config, controller=controller,
+        additional_constraints=additional_constraints)
 
 
 def train_4d(
@@ -197,11 +176,10 @@ def train_4d(
         raise RuntimeError("A completed run cannot be resumed in place.")
     if restart and existing:
         raise FileExistsError("Explicit restart still requires a new output directory to preserve history.")
-    output_directory.mkdir(parents=True, exist_ok=True)
-
     device = resolve_device(config.runtime.device)
     if config.runtime.amp and device.type != "cuda":
         raise RuntimeError("AMP was requested but the resolved device is not CUDA.")
+    output_directory.mkdir(parents=True, exist_ok=True)
     dtype = torch.float32 if config.runtime.precision == "float32" else torch.float64
     _seed_everything(config.optimization.seed)
 
@@ -288,10 +266,17 @@ def train_4d(
         )
         coordinates_batch = train_coordinates[indices].to(device)
         targets_batch = train_targets[indices].to(device)
+        if step == start_step:
+            execution = device_record(config.runtime.device, device, model=model,
+                                      batch=coordinates_batch, dtype=dtype,
+                                      amp=config.runtime.amp)
+            execution["target_device"] = str(targets_batch.device)
+            name = ("execution_device.json" if start_step == 0
+                    else f"execution_device_resume_step_{start_step}.json")
+            atomic_json_save(execution, output_directory / name)
         optimizer.zero_grad(set_to_none=True)
         with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
-            predictions = model(coordinates_batch)
-            data_loss = torch.mean((predictions - targets_batch) ** 2)
+            predictions, data_loss = data_objective(model, coordinates_batch, targets_batch, recipe="xyzt")
         scaler.scale(data_loss).backward()
 
         raw_components = {"horizontal": 0.0, "vertical": 0.0, "temporal": 0.0}
@@ -309,7 +294,7 @@ def train_4d(
             assert collocation is not None
             total_count = len(collocation)
             micro = config.collocation.derivative_microbatch_size
-            for begin in range(0, total_count, micro):
+            for begin in microbatch_starts(total_count, micro):
                 points = collocation[begin : begin + micro]
                 fraction = len(points) / total_count
                 prior, details = derivative_prior_4d(
@@ -333,7 +318,7 @@ def train_4d(
             assert collocation is not None
             total_count = len(collocation)
             micro = config.collocation.derivative_microbatch_size
-            for begin in range(0, total_count, micro):
+            for begin in microbatch_starts(total_count, micro):
                 points = collocation[begin : begin + micro]
                 fraction = len(points) / total_count
                 for constraint in constraints:
@@ -354,8 +339,8 @@ def train_4d(
 
         scaler.unscale_(optimizer)
         gradient_norm = float(torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=float("inf")).cpu())
-        scaler.step(optimizer)
-        scaler.update()
+        # Same ordered scaler operations, after the native unscale/norm stage.
+        parameter_update(optimizer, recipe="xyzt", scaler=scaler)
         data_value = float(data_loss.detach().cpu())
         best_data_loss = min(best_data_loss, data_value)
         active_weights = controller.update(step, data_value, raw_components)

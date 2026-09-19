@@ -53,6 +53,7 @@ class Sine(nn.Module):
         self.w0 = float(w0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Elementwise sin(w0*x), same shape/device/dtype; no RNG or mutation."""
         return torch.sin(self.w0 * x)
 
 
@@ -149,8 +150,8 @@ class MLPINR(nn.Module):
 
     Synthetic and real-radar trainers construct this same network. The real-data
     reader currently selects an altitude band, so z is metadata rather than a model
-    coordinate. A future 4D experiment can increase `in_features` without changing
-    the SIREN implementation.
+    coordinate. The existing SIREN4D specialization passes in_features=4
+    for normalized(x,y,z,t), sharing this exact implementation. No dropout exists.
     """
 
     def __init__(
@@ -164,6 +165,13 @@ class MLPINR(nn.Module):
         hidden_omega_0: float = 5,
         outermost_linear: bool = True,
     ):
+        """Construct [N,D]→[N,C] layers, retaining exact default/custom RNG order.
+
+        Linear creation draws default weights/bias before init_linear; sine keeps
+        default bias. net indices/state keys and always-linear output are fixed.
+        outermost_linear is stored but historically inert, deliberately preserved.
+        No normalization/loss/physics or input/output clipping is chosen here.
+        """
         super().__init__()
 
         self.in_features = int(in_features)

@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 import torch
 
+from inr_isr.analysis import normalized_gradient_chunks
 from .checkpoint import atomic_json_save
 from .data import AffineScaler, FieldBundle4D
 from .evaluation import load_trained_model, point_metrics
@@ -49,12 +50,10 @@ def predict_log_and_physical_derivatives(
     coordinate_spans = coordinate_scaler.maximum - coordinate_scaler.minimum
     chain = torch.as_tensor(target_span / coordinate_spans, dtype=dtype, device=device)
     model.eval()
-    for begin in range(0, len(normalized), chunk_size):
-        points = torch.as_tensor(
-            normalized[begin : begin + chunk_size], dtype=dtype, device=device
-        ).requires_grad_(True)
-        prediction_normalized = model(points)
-        gradient = torch.autograd.grad(prediction_normalized.sum(), points)[0]
+    for prediction_normalized, gradient in normalized_gradient_chunks(
+        model, normalized, device=device, dtype=dtype,
+        chunk_size=chunk_size, policy="xyzt"
+    ):
         predictions.append(
             target_scaler.inverse_transform(prediction_normalized.detach().cpu().numpy())
         )
@@ -84,6 +83,7 @@ def evaluate_independent_synthetic_truth(
     output_directory: Path,
     truth_count: int,
     truth_seed: int,
+    device_policy: str = "cuda",
 ) -> dict[str, Any]:
     """Evaluate independent points never used for fitting or collocation."""
 
@@ -101,7 +101,8 @@ def evaluate_independent_synthetic_truth(
         integration_duration_sec=observation_config.integration_duration_sec,
         integration_samples=observation_config.integration_samples,
     )
-    model, config, _, device, dtype = load_trained_model(checkpoint_path)
+    model, config, _, device, dtype = load_trained_model(
+        checkpoint_path, device_policy=device_policy)
     prediction_log, prediction_derivatives = predict_log_and_physical_derivatives(
         model,
         coordinates,

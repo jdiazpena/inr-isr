@@ -10,6 +10,7 @@ from typing import Literal
 
 import torch
 import torch.nn.functional as functional
+from inr_isr.training.derivatives import coordinate_gradient, hessian_rows
 
 
 DerivativeMode = Literal[
@@ -58,24 +59,9 @@ def second_derivatives_4d(
     prediction = model(points)
     if prediction.ndim != 2 or prediction.shape != (points.shape[0], 1):
         raise ValueError("Derivative priors currently require model output shape [N, 1].")
-    first = torch.autograd.grad(
-        prediction,
-        points,
-        grad_outputs=torch.ones_like(prediction),
-        create_graph=True,
-        retain_graph=True,
-    )[0]
-    rows = []
-    for axis in range(4):
-        rows.append(
-            torch.autograd.grad(
-                first[:, axis : axis + 1],
-                points,
-                grad_outputs=torch.ones_like(first[:, axis : axis + 1]),
-                create_graph=True,
-                retain_graph=True,
-            )[0]
-        )
+    first = coordinate_gradient(prediction, points)
+    names = ("x", "y", "z", "t")
+    rows = hessian_rows(first, points, axes=names, selected=names)
 
     factors = (
         physical_scale.factors(points)
@@ -87,7 +73,7 @@ def second_derivatives_4d(
     names = ("x", "y", "z", "t")
     for i, first_name in enumerate(names):
         for j, second_name in enumerate(names):
-            result[first_name + second_name] = rows[i][:, j : j + 1] * factors[i] * factors[j]
+            result[first_name + second_name] = rows[first_name][:, j : j + 1] * factors[i] * factors[j]
     return result
 
 
