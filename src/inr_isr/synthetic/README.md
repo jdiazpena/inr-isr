@@ -1,19 +1,24 @@
 Created: 2026-10-09
 Last edited: 2026-10-11
-Status: Additive analytic scene generation and truth rendering; no neural workloads
+Status: Compatible schema1/schema2 generation and logarithmic truth views; no neural workloads
 
 # Structured synthetic scenes
 
-This package adds a smooth sinusoidal interface between two density regions and
-a frozen list of positive Gaussian enhancements. All components translate with
-one selected x velocity. It reuses `synthetic_plasma.MovingGaussianPatch` and
-the existing time-array helper. Existing generator cases/defaults, dataset and
-trainers remain available. This is a designed reconstruction control, not fluid
-evolution or a model of plasma production.
+This package supplies a sinusoidal interface between two density regions and a
+frozen patch list, translating with one selected x velocity. Schema1 retains its
+Gaussian density enhancements and original numerical behaviour. Schema2 defines
+the field in log-density and adds circular patches whose size and edge width are
+independent. Existing generator cases/defaults, dataset and trainers remain
+available. This is a designed reconstruction control, not fluid evolution or a
+model of plasma production.
 
-`field.py` owns physical-coordinate values and first/second log-density
-derivatives. `design.py` draws a patch list once using PCG64; save its returned
-parameters. `tables.py` produces the existing synthetic CSV interface.
+`scene_from_definition` in `field.py` explicitly dispatches by schema version;
+`StructuredScene` itself retains schema1. `log_field.py` owns schema2 values and
+first/second log-density derivatives. `profiles.py` defines compact C2 ramps:
+the patch diameter is measured at half enhancement and edge width at10–90%.
+`design.py` draws a patch list once using PCG64; save its returned parameters.
+Its matched-pair helper shares size/context/enhancement and counterbalances
+sharp/gradual arrival order. `tables.py` produces the existing synthetic CSV interface.
 `render.py` streams matched views through system FFmpeg and verifies them with
 ffprobe/full decoding. `records.py` saves small command/source/runtime receipts.
 
@@ -42,12 +47,14 @@ queries fail without padding. Accuracy must be checked for each new recipe.
 Only values and first derivatives are returned for positive exposures; second
 derivative truth is currently instantaneous.
 
-Default truth sums every Gaussian. Rendering may omit whole patches farther
+Schema1 truth sums every Gaussian. Rendering may omit whole patches farther
 than ten Gaussian widths from every grid point; the evaluator returns the
-absolute density omission bound. Static views save numerical plot inputs.
+absolute density omission bound. Schema2 patches have compact support and exact
+zero exterior derivatives; disjoint supports prevent summed patch enhancements
+from exceeding the recipe's declared peak. Static views save numerical plot inputs.
 MP4s and stills display log10(Ne/m^-3), with one shared logarithmic density scale
-across cases and times. The recipe's positive density bounds are converted to
-log10 colour limits; receipts record the display transform and limits. Saved
+across cases and times. Schema1's density bounds become log10 colour limits;
+schema2 specifies `vmin_log10_ne`/`vmax_log10_ne` directly. Receipts record the display transform and limits. Saved
 numerical plot inputs retain their original values.
 MP4s show simultaneous cases with fixed colour limits, coordinates, locations,
 elapsed time and playback mapping. Software encoding uses CPU; no neural model
@@ -58,8 +65,10 @@ Run focused non-neural tests directly, without a broad training-fixture suite:
 
 ```bash
 python tests/test_structured_scene_generation.py
+python tests/test_log_structured_scene.py
 ```
 
-These check finite-difference derivatives, rigid translation and density
-averaging against independent adaptive quadrature. They establish generator
+These check finite-difference derivatives, rigid translation, actual edge widths,
+size independence, C2 joins, invalid/overlapping recipes and exposure averaging
+against independent adaptive quadrature. They establish generator
 correctness for the fixture, not physical realism or reconstruction performance.

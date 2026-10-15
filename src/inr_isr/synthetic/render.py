@@ -10,12 +10,17 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FFMpegWriter
 import numpy as np
 
-from .field import StructuredScene
+from .field import scene_from_definition
 from .records import file_identity
 
 
 def _log_density_limits(definition):
     settings = definition["render"]
+    if definition.get("schema_version") == 2:
+        low, high = settings["vmin_log10_ne"], settings["vmax_log10_ne"]
+        if not np.isfinite([low, high]).all() or low >= high:
+            raise ValueError("Log-density colour limits must be finite and ordered")
+        return float(low), float(high)
     low, high = settings["vmin_ne_m3"], settings["vmax_ne_m3"]
     if not np.isfinite([low, high]).all() or not 0 < low < high:
         raise ValueError("Density colour limits must be finite, positive and ordered")
@@ -31,7 +36,7 @@ def scene_view(definition, geometry, grid_size=192):
     y = np.linspace(*d["y_bounds_km"], grid_size)
     X, Y = np.meshgrid(x, y)
     cases = definition["cases"]
-    scenes = [StructuredScene(definition, c["speed_km_s"]) for c in cases]
+    scenes = [scene_from_definition(definition, c["speed_km_s"]) for c in cases]
     fig, axes = plt.subplots(1, len(cases), figsize=(12.8, 6.4), dpi=100, squeeze=False)
     axes = axes.ravel()
     images, fronts = [], []

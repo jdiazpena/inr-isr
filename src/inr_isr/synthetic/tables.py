@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 
 from synthetic_plasma import make_time_array
-from .field import StructuredScene, average_scene
+from .field import scene_from_definition, average_scene
 
 
 def observation_table(definition, geometry, speed_km_s, *, start_sec=0, end_sec=None,
@@ -28,7 +28,7 @@ def observation_table(definition, geometry, speed_km_s, *, start_sec=0, end_sec=
     df["beam_id"] = np.tile(geometry["beam_index"].to_numpy(), len(ids))
     df["time_index"] = np.repeat(ids, n)
     df["t_sec"] = np.repeat(times[ids], n)
-    scene = StructuredScene(definition, speed_km_s)
+    scene = scene_from_definition(definition, speed_km_s)
     vals = average_scene(scene, df.x_km.to_numpy(), df.y_km.to_numpy(),
                          df.t_sec.to_numpy(), exposure_sec,
                          max_spacing_sec=integration_spacing_sec)

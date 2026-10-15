@@ -128,6 +128,14 @@ class StructuredScene:
         return out
 
 
+def scene_from_definition(definition, speed_km_s):
+    """Explicit recipe-version dispatch; keep schema1 numerical behaviour intact."""
+    if definition.get("schema_version") == 2:
+        from .log_field import LogStructuredScene
+        return LogStructuredScene(definition, speed_km_s)
+    return StructuredScene(definition, speed_km_s)
+
+
 def average_scene(scene, x_km, y_km, t_sec, exposure_sec, *, max_spacing_sec=0.1):
     """Centred trapezoidal average of underlying LINEAR density, then log10.
 
