@@ -49,6 +49,7 @@ def train_window(
     plot_diagnostics_fn: Callable[[Path, Path], None],
     plot_prediction_fn: Callable[..., None],
     diagnostics_without_regularization: bool,
+    experiment=None,
 ) -> None:
     """Train one x-y-time SIREN window without changing experiment semantics.
 
@@ -94,6 +95,12 @@ def train_window(
 
     dataset.summary()
 
+    if experiment is not None:
+        from inr_isr.experiments.validation import DevelopmentMonitor
+        development_monitor = DevelopmentMonitor(experiment, dataset, out_dir)
+    else:
+        development_monitor = None
+
     sample = dataset[0]
 
     full_coords = sample["coords"].to(device)
@@ -134,7 +141,8 @@ def train_window(
         diagnostic_use_xy = use_xy_curv
         diagnostic_use_t = use_t_curv
     needs_collocation_pool = (
-        use_xy_curv or use_t_curv or diagnostic_use_xy or diagnostic_use_t
+        use_xy_curv or use_t_curv or
+        (development_monitor is None and (diagnostic_use_xy or diagnostic_use_t))
     )
 
     if needs_collocation_pool:
@@ -149,10 +157,13 @@ def train_window(
 
         collocation_pool = collocation_pool.to(device)
 
-        diagnostic_collocation_points = sample_collocation_points(
-            collocation_pool=collocation_pool,
-            num_collocation=args.num_diagnostic_collocation,
-        ).detach()
+        if development_monitor is None:
+            diagnostic_collocation_points = sample_collocation_points(
+                collocation_pool=collocation_pool,
+                num_collocation=args.num_diagnostic_collocation,
+            ).detach()
+        else:
+            diagnostic_collocation_points = development_monitor.diagnostic_points(device)
 
         print()
         print("Collocation points:")
@@ -182,6 +193,16 @@ def train_window(
     else:
         collocation_pool = None
         diagnostic_collocation_points = None
+
+    if development_monitor is not None:
+        if diagnostic_collocation_points is None:
+            diagnostic_collocation_points = development_monitor.diagnostic_points(device)
+        print(f"Experiment: {experiment.data['id']}")
+        print(f"  fixed diagnostic points: {len(diagnostic_collocation_points)}")
+        print(f"  active training curvature: xy={use_xy_curv}, t={use_t_curv}")
+        print(f"  training curvature samples/update: {args.num_collocation if use_xy_curv or use_t_curv else 0}")
+        print(f"  derivative diagnostics saved every {args.summary_every} updates")
+        print(f"  development selection: every {experiment.data['selection_every']} completed updates and last")
 
     # ------------------------------------------------------------
     # 3. Build model
@@ -612,6 +633,9 @@ def train_window(
             compute_grad_norm=compute_component_grad_diag, parameters=trainable_params,
             diagnostics=latest_grad_diag, grad_norm=parameter_grad_norm_from_existing_grads)
 
+        if development_monitor is not None:
+            development_monitor.after_update(step, args.num_steps, model, config, device)
+
         if step == 1 or step % args.summary_every == 0 or step == args.num_steps:
             model.eval()
 
@@ -710,7 +734,7 @@ def train_window(
             append_csv_row(history_path, history_fields, row)
 
         if step == 1 or step % args.log_every == 0 or step == args.num_steps:
-            pbar.set_postfix_str(
+            native_postfix = (
                 f"tot={total_loss.item():.2e} "
                 f"data={data_loss.item():.2e} "
                 f"ref={data_reference:.1e} "
@@ -722,6 +746,12 @@ def train_window(
                 f"lt={lambda_curv_t_eff:.1e} "
                 f"rmse={latest_metrics['rmse']:.2e}"
             )
+            if development_monitor is not None:
+                dev = "--" if development_monitor.latest is None else f"{development_monitor.latest:.3e}"
+                pbar.set_postfix_str(f"data={data_loss.item():.2e} train={latest_metrics['rmse']:.3e} "
+                                     f"dev={dev} best@{development_monitor.best_step}")
+            else:
+                pbar.set_postfix_str(native_postfix)
 
     # ------------------------------------------------------------
     # 5. Save model and measured-point predictions

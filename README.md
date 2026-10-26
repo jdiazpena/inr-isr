@@ -1,5 +1,5 @@
 Created: Unknown (historical repository document)
-Last edited: 2026-09-14
+Last edited: 2026-10-26
 Status: Active overview; latest-stable inr-isr environment supersedes historical base setup
 
 # INR ISR 4D Reconstruction and Split Conformal Evaluation
@@ -117,6 +117,16 @@ Run commands from the new project root:
 ```bash
 cd /home/jdiaz/postdoc/inr-isr
 ```
+
+### Optional held-out development selection for xyt experiments
+
+The [experiment adapter](src/inr_isr/experiments/README.md) feeds checksummed
+training-only observations into the existing shared3D trainer, adds fixed
+diagnostic probes and post-update development-checkpoint selection, and supplies
+analytic-field reconstruction analysis. It introduces no second optimizer loop.
+Default native routes retain their existing scientific policies. The prepared
+experiment route still requires operator-run neural verification; non-neural
+function tests do not establish GPU parity or scientific accuracy.
 
 ### Additive 4D manifests
 
