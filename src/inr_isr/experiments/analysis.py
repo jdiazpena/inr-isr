@@ -17,6 +17,7 @@ from inr_isr.transforms import normalize_coords_from_scalers, denormalize_target
 from inr_isr.training.derivatives import coordinate_gradient, hessian_rows
 from inr_isr.synthetic.field import scene_from_definition
 from .contract import digest, grouped_metrics
+from .window import ExperimentWindow
 
 
 def error_metrics(error):
@@ -69,16 +70,21 @@ def width_around_peak(x, enhancement, level=.5):
     return (None if left is None else right - left), count
 
 
-def feature_analysis(scene, predict, settings, output, training_geometry=None):
+def feature_analysis(scene, predict, settings, output, training_geometry=None, *, window, domain):
     front_rows, profile_rows = [], []
     xy = None if training_geometry is None else training_geometry[["x_km", "y_km"]].to_numpy()
     hull = Delaunay(xy) if xy is not None and len(xy) >= 3 and np.linalg.matrix_rank(xy - xy.mean(axis=0)) == 2 else None
-    y = np.linspace(0, 510, 205)
-    for t in np.arange(3605, 14400, 300):
-        for x in (-50., 50., 150., 250., 350.):
+    xmin, xmax = domain["x_bounds_km"]
+    ymin, ymax = domain["y_bounds_km"]
+    y = np.linspace(ymin, ymax, settings.get("front_profile_samples", 205))
+    locations = settings.get("front_x_fractions", [.1, .3, .5, .7, .9])
+    times = window.sample_times(settings.get("front_time_step_sec", 300), settings.get("query_time_offset_sec", 5))
+    for t in times:
+        for fraction in locations:
+            x = xmin + fraction * (xmax - xmin)
             truth = scene.evaluate(np.full_like(y, x), y, t, derivatives=False)
             center = float(scene.boundary_y(x, t))
-            contaminated = bool((truth["patch_enhancement_dex"][abs(y - center) <= 180] > .05).any())
+            contaminated = bool((truth["patch_enhancement_dex"][abs(y - center) <= settings.get("front_patch_exclusion_km", 180)] > settings.get("front_contamination_threshold_dex", .05)).any())
             record = {"x_km": x, "t_sec": float(t), "truth_center_y_km": center,
                       "center_inside_training_hull": None if hull is None else bool(hull.find_simplex([[x, center]])[0] >= 0),
                       "profile_inside_training_hull_fraction": None if hull is None else float(np.mean(hull.find_simplex(np.column_stack([np.full_like(y, x), y])) >= 0)),
@@ -87,11 +93,12 @@ def feature_analysis(scene, predict, settings, output, training_geometry=None):
                       "width_error_km": None}
             if not contaminated:
                 prediction = predict(np.full_like(y, x), y, np.full_like(y, t))
-                middle = crossings(y, prediction, 10.5)
+                low_level, high_level = scene.front["low_log10_ne"], scene.front["high_log10_ne"]
+                middle = crossings(y, prediction, (low_level + high_level) / 2)
                 record.update(missing_center=not bool(len(middle)), crossing_count=len(middle))
                 if len(middle):
                     pcenter = float(middle[np.argmin(abs(middle - center))])
-                    low, high = crossings(y, prediction, 9.7), crossings(y, prediction, 11.3)
+                    low, high = (crossings(y, prediction, low_level + fraction * (high_level - low_level)) for fraction in settings["front_fraction_bounds"])
                     low, high = low[low < pcenter], high[high > pcenter]
                     record.update(pred_center_y_km=pcenter, center_error_km=pcenter - center)
                     if len(low) and len(high):
@@ -104,12 +111,13 @@ def feature_analysis(scene, predict, settings, output, training_geometry=None):
     fronts.to_csv(output / "front_metrics.csv", index=False)
     pd.DataFrame(profile_rows).to_csv(output / "front_profiles.csv", index=False)
     patch_rows, patch_profiles = [], []
+    patch_center = xmin + settings.get("patch_reference_x_fraction", .5) * (xmax - xmin)
     for patch in scene.patches:
-        t = (150 - patch.x0_km) / scene.speed
-        if not 3600 <= t <= 14400 or not 0 <= patch.y0_km <= 510:
+        t = (patch_center - patch.x0_km) / scene.speed
+        if not window.start <= t <= window.end or not ymin <= patch.y0_km <= ymax:
             continue
-        radius = patch.outer_radius_km + 30
-        x = np.linspace(max(-100, 150 - radius), min(400, 150 + radius), 501)
+        radius = patch.outer_radius_km + settings.get("patch_profile_padding_km", 30)
+        x = np.linspace(max(xmin, patch_center - radius), min(xmax, patch_center + radius), settings.get("patch_profile_samples", 501))
         y = np.full_like(x, patch.y0_km)
         truth = scene.evaluate(x, y, t, derivatives=False)
         prediction = predict(x, y, np.full_like(x, t))
@@ -120,11 +128,11 @@ def feature_analysis(scene, predict, settings, output, training_geometry=None):
         row = {"patch_id": patch.name, "region": patch.region, "edge_class": patch.edge_class,
                "t_sec": float(t), "height_dex": float(enhancement[peak]),
                "height_error_dex": float(enhancement[peak] - patch.enhancement_dex),
-               "position_error_km": None if left is None else (left + right) / 2 - 150,
+               "position_error_km": None if left is None else (left + right) / 2 - patch_center,
                "maximum_x_km": float(x[peak]), "missing_half_height": width is None,
                "profile_inside_training_hull_fraction": None if hull is None else float(np.mean(hull.find_simplex(np.column_stack([x, y])) >= 0)),
                "half_height_crossings": count, "width_error_km": None if width is None else width - patch.half_height_diameter_km,
-               "profile_clipped": 150 - radius < -100 or 150 + radius > 400}
+               "profile_clipped": patch_center - radius < xmin or patch_center + radius > xmax}
         patch_rows.append(row)
         patch_profiles.extend({"patch_id": patch.name, "x_km": float(xx), "y_km": patch.y0_km,
             "t_sec": float(t), "truth_log10": float(u), "prediction_log10": float(p),
@@ -144,7 +152,7 @@ def feature_analysis(scene, predict, settings, output, training_geometry=None):
                 ax.plot(p.x_km, p.truth_log10, label="truth")
                 ax.plot(p.x_km, p.prediction_log10, label="reconstruction")
                 ax.set_title(f"{edge}: {name}")
-            ax.set(xlabel="x (km)", ylabel="log10 density", ylim=(9.5, 12.5))
+            ax.set(xlabel="x (km)", ylabel="log10 density", ylim=settings.get("log_density_limits", [9.5, 12.5]))
             if len(candidates):
                 ax.legend()
             else:
@@ -170,20 +178,29 @@ def feature_analysis(scene, predict, settings, output, training_geometry=None):
 
 
 def analyze(contract, run, output, *, cpu=False):
+    window = ExperimentWindow.from_contract(contract).validate_inputs(contract)
     device = resolve_device("cpu" if cpu else "cuda")
     checkpoint_path = Path(run) / "model_best_development.pt"
     checkpoint = torch_load_checkpoint(checkpoint_path, device)
     if checkpoint.get("experiment_contract_sha256") != digest(contract.path):
         raise ValueError("Selected model belongs to another experiment contract")
-    model = build_model_from_checkpoint(checkpoint, device)
     scalers, target = checkpoint["coord_scalers"], checkpoint["target_scaler"]
+    window.assert_scalers(scalers, contract.data.get('window_policy', {}).get('require_observed_endpoints', False))
+    model = build_model_from_checkpoint(checkpoint, device)
     settings = contract.data["analysis"]
     definition = json.loads(contract.file("scene").read_text())
+    domain = contract.data.get("domain") or definition.get("domain") or {
+        "x_bounds_km": [scalers["x_km"]["min"], scalers["x_km"]["max"]],
+        "y_bounds_km": [scalers["y_km"]["min"], scalers["y_km"]["max"]]}
+    xmin, xmax = domain["x_bounds_km"]
+    ymin, ymax = domain["y_bounds_km"]
+    log_min, log_max = settings.get("log_density_limits", [9.5, 12.5])
     scene = scene_from_definition(definition, contract.data["speed_km_s"])
     output = Path(output)
     output.mkdir(parents=True, exist_ok=False)
 
     def predict(x, y, t):
+        window.assert_times(t, "prediction")
         coords = normalize_coords_from_scalers(np.asarray(x), np.asarray(y), np.asarray(t), scalers)
         values = predict_log10_on_coords(model, coords, target, device, contract.data["prediction_chunk"])
         if not np.isfinite(values).all():
@@ -211,6 +228,8 @@ def analyze(contract, run, output, *, cpu=False):
              "outside_hull": ~queries.inside_training_hull.to_numpy(), "patch": patch,
              "transition": (fraction >= lo) & (fraction <= hi),
              "low_interior": (fraction < lo) & ~patch, "high_interior": (fraction > hi) & ~patch}
+    if "inside_common_radar_hull" in queries:
+        masks["common_radar_interior"] = queries.inside_common_radar_hull.to_numpy()
     distance = queries.nearest_training_km.to_numpy()
     for lower, upper in ((0, 25), (25, 50), (50, 100), (100, np.inf)):
         masks[f"distance_{lower}_{upper}_km"] = (distance >= lower) & (distance < upper)
@@ -221,12 +240,13 @@ def analyze(contract, run, output, *, cpu=False):
     queries.to_csv(output / "field_queries_predictions.csv", index=False)
     pd.DataFrame(regional).to_csv(output / "regional_errors_dex.csv", index=False)
     scores["regions"] = regional
-    scores["primary_development_field_score"] = next(row for row in regional if row["region"] == "inside_hull")
-    scores["density_predictions_outside_plot_limits"] = int(((prediction < 9.5) | (prediction > 12.5)).sum())
+    primary = "common_radar_interior" if "common_radar_interior" in masks else "inside_hull"
+    scores["primary_development_field_score"] = next(row for row in regional if row["region"] == primary)
+    scores["density_predictions_outside_plot_limits"] = int(((prediction < log_min) | (prediction > log_max)).sum())
     n = settings["derivative_query_count"]
     q = queries.iloc[:n].copy()
     coordinates = normalize_coords_from_scalers(q.x_km.to_numpy(), q.y_km.to_numpy(), q.t_sec.to_numpy(), scalers)
-    derivative = physical_derivatives(model, coordinates, scalers, target, device)
+    derivative = physical_derivatives(model, coordinates, scalers, target, device, settings.get("derivative_chunk", 512))
     names = {"x": "true_dlog10Ne_dx_km", "y": "true_dlog10Ne_dy_km", "t": "true_dlog10Ne_dt_sec",
              "xx": "true_d2log10Ne_dxx_km2", "xy": "true_d2log10Ne_dxy_km2",
              "yy": "true_d2log10Ne_dyy_km2", "tt": "true_d2log10Ne_dtt_sec2"}
@@ -242,7 +262,7 @@ def analyze(contract, run, output, *, cpu=False):
             "inside_hull": error_metrics(error[inside]), "outside_hull": error_metrics(error[~inside])}
     q.to_csv(output / "derivative_queries_predictions.csv", index=False)
     map_values = []
-    xx, yy = np.meshgrid(np.linspace(-100, 400, settings["grid_nx"]), np.linspace(0, 510, settings["grid_ny"]))
+    xx, yy = np.meshgrid(np.linspace(xmin, xmax, settings["grid_nx"]), np.linspace(ymin, ymax, settings["grid_ny"]))
     for t in settings["map_times_sec"]:
         true = scene.evaluate(xx, yy, t, derivatives=False)["log10_Ne"]
         pred = predict(xx.ravel(), yy.ravel(), np.full(xx.size, t)).reshape(xx.shape)
@@ -254,7 +274,7 @@ def analyze(contract, run, output, *, cpu=False):
         fig, axes = plt.subplots(1, 3, figsize=(13, 4), layout="constrained")
         for ax, z, title, cmap, lower, upper in zip(axes, (true, pred, pred - true),
                 ("truth", "reconstruction", "error (dex)"), ("viridis", "viridis", "RdBu_r"),
-                (9.5, 9.5, -error_bound), (12.5, 12.5, error_bound)):
+                (log_min, log_min, -error_bound), (log_max, log_max, error_bound)):
             image = ax.pcolormesh(xx, yy, z, shading="auto", cmap=cmap, vmin=lower, vmax=upper)
             training = geometry[geometry.role == "train"]
             ax.scatter(training.x_km, training.y_km, c="white", edgecolors="black", s=9, linewidths=.4)
@@ -264,7 +284,8 @@ def analyze(contract, run, output, *, cpu=False):
         fig.savefig(output / f"map_{t:05d}s.png", dpi=140)
         plt.close(fig)
         np.savez_compressed(output / f"map_{t:05d}s.npz", x_km=xx, y_km=yy, truth_log10=true, prediction_log10=pred)
-    x, t = np.meshgrid(np.linspace(-100, 400, 101), np.arange(3605, 14400, 30))
+    x, t = np.meshgrid(np.linspace(xmin, xmax, settings.get("cut_x_samples", 101)),
+                       window.sample_times(settings.get("cut_time_step_sec", 30), settings.get("query_time_offset_sec", 5)))
     y = np.full_like(x, settings["cut_y_km"])
     true = scene.evaluate(x, y, t, derivatives=False)["log10_Ne"]
     pred = predict(x.ravel(), y.ravel(), t.ravel()).reshape(x.shape)
@@ -273,14 +294,15 @@ def analyze(contract, run, output, *, cpu=False):
         error = title == "error (dex)"
         bound = max(.01, float(np.max(abs(pred - true))))
         im = ax.pcolormesh(x, t / 3600, z, shading="auto", cmap="RdBu_r" if error else "viridis",
-                           vmin=-bound if error else 9.5, vmax=bound if error else 12.5)
+                           vmin=-bound if error else log_min, vmax=bound if error else log_max)
         ax.set(title=title, xlabel="x (km)", ylabel="time (hours)")
         fig.colorbar(im, ax=ax, label="dex" if error else "log10 density")
     fig.suptitle(f"Fixed cut y={settings['cut_y_km']} km")
     fig.savefig(output / "space_time_cut.png", dpi=140)
     plt.close(fig)
     np.savez_compressed(output / "space_time_cut.npz", x_km=x, t_sec=t, truth_log10=true, prediction_log10=pred)
-    scores["features"] = feature_analysis(scene, predict, settings, output, geometry[geometry.role == "train"])
+    scores["features"] = feature_analysis(scene, predict, settings, output, geometry[geometry.role == "train"], window=window, domain=domain)
+    scores["time_window_sec"] = [window.start, window.end]
     history = pd.read_csv(Path(run) / "history.csv")
     development = pd.read_csv(Path(run) / "development_history.csv")
     fig, axes = plt.subplots(1, 3, figsize=(13, 4), layout="constrained")

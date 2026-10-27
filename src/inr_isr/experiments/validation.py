@@ -9,11 +9,16 @@ import torch
 from inr_isr.prediction import predict_log10_on_coords
 from inr_isr.transforms import normalize_coords_from_scalers
 from .contract import digest, grouped_metrics, improves
+from .window import ExperimentWindow
 
 
 class DevelopmentMonitor:
     def __init__(self, contract, dataset, output):
         self.contract, self.dataset, self.output = contract, dataset, Path(output)
+        self.window = ExperimentWindow.from_contract(contract).validate_inputs(contract)
+        self.window.assert_times(dataset.df.t_sec, "selected training data")
+        require_endpoints = contract.data.get('window_policy', {}).get('require_observed_endpoints', False)
+        self.window.assert_scalers(dataset.coord_scalers, require_endpoints)
         self.development = pd.read_csv(contract.file("development"))
         expected = set(contract.data["roles"]["development"])
         if set(self.development.beam_id.unique()) != expected:

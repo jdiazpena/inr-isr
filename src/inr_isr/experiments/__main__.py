@@ -9,6 +9,8 @@ from inr_isr.synthetic.records import runtime_identity, save_json, utc_now
 
 
 def train(contract, output, smoke=False, cpu=False):
+    from .window import ExperimentWindow
+    ExperimentWindow.from_contract(contract).validate_inputs(contract)
     from synthetic_train_3d import build_parser, build_dataset, plot_history, plot_diagnostics, plot_xy_prediction_at_time
     from training_engine import train_window
     args = build_parser().parse_args([])
