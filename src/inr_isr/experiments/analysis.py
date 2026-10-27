@@ -180,10 +180,15 @@ def feature_analysis(scene, predict, settings, output, training_geometry=None, *
 def analyze(contract, run, output, *, cpu=False):
     window = ExperimentWindow.from_contract(contract).validate_inputs(contract)
     device = resolve_device("cpu" if cpu else "cuda")
-    checkpoint_path = Path(run) / "model_best_development.pt"
+    checkpoint_path = Path(run) / ("model_reconstruction.pt" if contract.all_beam else "model_best_development.pt")
     checkpoint = torch_load_checkpoint(checkpoint_path, device)
     if checkpoint.get("experiment_contract_sha256") != digest(contract.path):
         raise ValueError("Selected model belongs to another experiment contract")
+    if contract.all_beam:
+        selection = json.loads((Path(run) / "selection.json").read_text())
+        if (checkpoint.get("checkpoint_type") != "final_reconstruction_after_update"
+                or selection.get("rule") != "final_update" or checkpoint["step"] != selection["completed_updates"]):
+            raise ValueError("All-beam analysis requires the final completed update")
     scalers, target = checkpoint["coord_scalers"], checkpoint["target_scaler"]
     window.assert_scalers(scalers, contract.data.get('window_policy', {}).get('require_observed_endpoints', False))
     model = build_model_from_checkpoint(checkpoint, device)
@@ -208,8 +213,9 @@ def analyze(contract, run, output, *, cpu=False):
         return values
 
     scores = {"checkpoint": {"path": str(checkpoint_path), "sha256": digest(checkpoint_path), "step": checkpoint["step"]},
-              "role": "development; reserved observations not opened", "density_units": "dex", "observations": {}}
-    for role in ("train", "development"):
+              "role": "all-beam synthetic development; no withheld measurements or independent final test" if contract.all_beam else "development; reserved observations not opened",
+              "density_units": "dex", "observations": {}}
+    for role in (("train",) if contract.all_beam else ("train", "development")):
         table = pd.read_csv(contract.file(role))
         prediction = predict(table.x_km.to_numpy(), table.y_km.to_numpy(), table.t_sec.to_numpy())
         scores["observations"][role] = grouped_metrics(prediction, table.log10_Ne.to_numpy(), table.beam_id.to_numpy())
@@ -241,7 +247,8 @@ def analyze(contract, run, output, *, cpu=False):
     pd.DataFrame(regional).to_csv(output / "regional_errors_dex.csv", index=False)
     scores["regions"] = regional
     primary = "common_radar_interior" if "common_radar_interior" in masks else "inside_hull"
-    scores["primary_development_field_score"] = next(row for row in regional if row["region"] == primary)
+    primary_key = "primary_field_score" if contract.all_beam else "primary_development_field_score"
+    scores[primary_key] = next(row for row in regional if row["region"] == primary)
     scores["density_predictions_outside_plot_limits"] = int(((prediction < log_min) | (prediction > log_max)).sum())
     n = settings["derivative_query_count"]
     q = queries.iloc[:n].copy()
@@ -304,16 +311,22 @@ def analyze(contract, run, output, *, cpu=False):
     scores["features"] = feature_analysis(scene, predict, settings, output, geometry[geometry.role == "train"], window=window, domain=domain)
     scores["time_window_sec"] = [window.start, window.end]
     history = pd.read_csv(Path(run) / "history.csv")
-    development = pd.read_csv(Path(run) / "development_history.csv")
     fig, axes = plt.subplots(1, 3, figsize=(13, 4), layout="constrained")
     axes[0].plot(history.step, history.data_loss, label="training minibatch MSE (normalized)")
     axes[0].set_yscale("log")
-    axes[1].plot(development.step, development.macro_rmse_dex, label="development macro RMSE (dex)")
+    if contract.all_beam:
+        axes[1].text(.5, .5, "All beams and observation times used\nFixed final update; no withheld selection",
+                     ha="center", va="center", transform=axes[1].transAxes)
+        axes[1].set_axis_off()
+    else:
+        development = pd.read_csv(Path(run) / "development_history.csv")
+        axes[1].plot(development.step, development.macro_rmse_dex, label="development macro RMSE (dex)")
     for column in ("fxx_rms", "fxy_rms", "fyy_rms", "ftt_rms"):
         axes[2].plot(history.step, history[column], label=column)
     for ax in axes:
         ax.set_xlabel("completed updates; minibatch loss is pre-update")
-        ax.legend(fontsize=7)
+        if ax.get_legend_handles_labels()[0]:
+            ax.legend(fontsize=7)
     axes[2].set_title("Normalized diagnostic derivatives; components kept separate")
     fig.savefig(output / "training_and_diagnostics.png", dpi=140)
     plt.close(fig)

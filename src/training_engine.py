@@ -96,8 +96,9 @@ def train_window(
     dataset.summary()
 
     if experiment is not None:
-        from inr_isr.experiments.validation import DevelopmentMonitor
-        development_monitor = DevelopmentMonitor(experiment, dataset, out_dir)
+        from inr_isr.experiments.validation import DevelopmentMonitor, ReconstructionMonitor
+        monitor_type = ReconstructionMonitor if experiment.all_beam else DevelopmentMonitor
+        development_monitor = monitor_type(experiment, dataset, out_dir)
     else:
         development_monitor = None
 
@@ -202,7 +203,10 @@ def train_window(
         print(f"  active training curvature: xy={use_xy_curv}, t={use_t_curv}")
         print(f"  training curvature samples/update: {args.num_collocation if use_xy_curv or use_t_curv else 0}")
         print(f"  derivative diagnostics saved every {args.summary_every} updates")
-        print(f"  development selection: every {experiment.data['selection_every']} completed updates and last")
+        if experiment.all_beam:
+            print("  all available beams/times train; zero withheld; analysis uses the final completed update")
+        else:
+            print(f"  development selection: every {experiment.data['selection_every']} completed updates and last")
 
     # ------------------------------------------------------------
     # 3. Build model
@@ -746,7 +750,7 @@ def train_window(
                 f"lt={lambda_curv_t_eff:.1e} "
                 f"rmse={latest_metrics['rmse']:.2e}"
             )
-            if development_monitor is not None:
+            if development_monitor is not None and not experiment.all_beam:
                 dev = "--" if development_monitor.latest is None else f"{development_monitor.latest:.3e}"
                 pbar.set_postfix_str(f"data={data_loss.item():.2e} train={latest_metrics['rmse']:.3e} "
                                      f"dev={dev} best@{development_monitor.best_step}")

@@ -74,3 +74,39 @@ class DevelopmentMonitor:
         (self.output / "selection.json").write_text(json.dumps({"best_step": self.best_step,
             "best_macro_rmse_dex": self.best_score, "completed_updates": step,
             "rule": "minimum post-update macro RMSE in dex; earlier exact tie wins"}, indent=2) + "\n")
+
+
+class ReconstructionMonitor(DevelopmentMonitor):
+    """Fixed probes and final-update saving; no prediction-based model selection."""
+
+    def __init__(self, contract, dataset, output):
+        if not contract.all_beam:
+            raise ValueError("ReconstructionMonitor requires an explicit all-beam contract")
+        contract.validate_all_beam_inputs()
+        self.contract, self.dataset, self.output = contract, dataset, Path(output)
+        self.window = ExperimentWindow.from_contract(contract).validate_inputs(contract)
+        self.window.assert_times(dataset.df.t_sec, "all-beam training data")
+        self.window.assert_scalers(dataset.coord_scalers, True)
+        if digest(dataset.csv_path) != contract.data["inputs"]["train"]["sha256"]:
+            raise ValueError("Dataset differs from the all-beam training input")
+        if dataset.n_samples != len(pd.read_csv(contract.file("train"))):
+            raise ValueError("Dataset silently removed observations")
+        self.latest = self.best_step = None
+        self.output.joinpath("experiment_contract.json").write_text(json.dumps(contract.data, indent=2) + "\n")
+        self.output.joinpath("preprocessing.json").write_text(json.dumps({
+            "policy": "fit all coordinate and target limits on all supplied measurements; no clipping",
+            "train_rows": dataset.n_samples, "coord_scalers": dataset.coord_scalers,
+            "target_scaler": dataset.target_scaler}, indent=2) + "\n")
+
+    def after_update(self, step, total_steps, model, config, device):
+        if step != total_steps:
+            return
+        torch.save({"model_state_dict": model.state_dict(), "config": config,
+            "coord_scalers": self.dataset.coord_scalers, "target_scaler": self.dataset.target_scaler,
+            "checkpoint_type": "final_reconstruction_after_update", "step": step,
+            "experiment_id": self.contract.data["id"],
+            "experiment_contract_sha256": digest(self.contract.path)},
+            self.output / "model_reconstruction.pt")
+        (self.output / "selection.json").write_text(json.dumps({
+            "completed_updates": step, "rule": "final_update", "step": step,
+            "withheld_beams": 0, "withheld_times": 0, "score_based_selection": False}, indent=2) + "\n")
