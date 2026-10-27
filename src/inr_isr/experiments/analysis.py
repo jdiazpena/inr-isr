@@ -30,6 +30,30 @@ def error_metrics(error):
             "mae": float(np.mean(abs(e))), "bias": float(np.mean(e))}
 
 
+def withholding_support(queries, training, rule, cadence, held):
+    """Refresh support from actual retained observations, not cached full-data labels."""
+    result = queries.copy()
+    locations = training[["x_km", "y_km"]].drop_duplicates().to_numpy()
+    points = result[["x_km", "y_km"]].to_numpy()
+    result["nearest_training_km"] = np.linalg.norm(points[:, None, :] - locations[None, :, :], axis=2).min(axis=1)
+    result["inside_training_hull"] = Delaunay(locations).find_simplex(points) >= 0
+    times = np.sort(training.t_sec.unique())
+    t = result.t_sec.to_numpy()
+    left = np.clip(np.searchsorted(times, t, side="right") - 1, 0, len(times) - 2)
+    lower, upper = times[left], times[left + 1]
+    gap = upper - lower
+    distance = np.minimum(abs(t - lower), abs(upper - t))
+    result["nearest_training_time_sec"] = distance
+    result["bracketing_training_gap_sec"] = gap
+    result["time_gap_fraction"] = distance / gap
+    result["inside_withheld_time_gap"] = (gap > cadence + 1e-8) & (t > lower) & (t < upper)
+    if rule["kind"] == "beams":
+        removed = held[["x_km", "y_km"]].drop_duplicates().to_numpy()
+        result["nearest_withheld_beam_km"] = np.linalg.norm(points[:, None, :] - removed[None, :, :], axis=2).min(axis=1)
+        result["closer_to_withheld_beam"] = result.nearest_withheld_beam_km < result.nearest_training_km
+    return result
+
+
 def physical_derivatives(model, normalized, coord_scalers, target_scaler, device, chunk=512):
     """Reuse shared autograd kernels; apply separate physical chain factors."""
     scale = .5 * (target_scaler["max"] - target_scaler["min"])
@@ -180,15 +204,21 @@ def feature_analysis(scene, predict, settings, output, training_geometry=None, *
 def analyze(contract, run, output, *, cpu=False):
     window = ExperimentWindow.from_contract(contract).validate_inputs(contract)
     device = resolve_device("cpu" if cpu else "cuda")
-    checkpoint_path = Path(run) / ("model_reconstruction.pt" if contract.all_beam else "model_best_development.pt")
+    checkpoint_path = Path(run) / ("model_reconstruction.pt" if contract.final_update else "model_best_development.pt")
     checkpoint = torch_load_checkpoint(checkpoint_path, device)
     if checkpoint.get("experiment_contract_sha256") != digest(contract.path):
         raise ValueError("Selected model belongs to another experiment contract")
-    if contract.all_beam:
+    if contract.final_update:
         selection = json.loads((Path(run) / "selection.json").read_text())
         if (checkpoint.get("checkpoint_type") != "final_reconstruction_after_update"
                 or selection.get("rule") != "final_update" or checkpoint["step"] != selection["completed_updates"]):
             raise ValueError("All-beam analysis requires the final completed update")
+        if contract.withholding:
+            rule = contract.data["withholding"]
+            if (selection.get("score_based_selection") is not False
+                    or selection.get("withheld_beams") != len(rule["beam_indices"])
+                    or selection.get("withheld_times") != len(rule["times_sec"])):
+                raise ValueError("Assessment selection metadata differs from the declared final-update masks")
     scalers, target = checkpoint["coord_scalers"], checkpoint["target_scaler"]
     window.assert_scalers(scalers, contract.data.get('window_policy', {}).get('require_observed_endpoints', False))
     model = build_model_from_checkpoint(checkpoint, device)
@@ -215,14 +245,24 @@ def analyze(contract, run, output, *, cpu=False):
     scores = {"checkpoint": {"path": str(checkpoint_path), "sha256": digest(checkpoint_path), "step": checkpoint["step"]},
               "role": "all-beam synthetic development; no withheld measurements or independent final test" if contract.all_beam else "development; reserved observations not opened",
               "density_units": "dex", "observations": {}}
-    for role in (("train",) if contract.all_beam else ("train", "development")):
+    if contract.withholding:
+        scores.update(role="separate withholding assessment; fixed final model; development evidence, not independent final validation",
+                      withholding=contract.data["withholding"], score_based_selection=False)
+    roles = ("train", "withheld") if contract.withholding else (("train",) if contract.all_beam else ("train", "development"))
+    for role in roles:
         table = pd.read_csv(contract.file(role))
         prediction = predict(table.x_km.to_numpy(), table.y_km.to_numpy(), table.t_sec.to_numpy())
         scores["observations"][role] = grouped_metrics(prediction, table.log10_Ne.to_numpy(), table.beam_id.to_numpy())
         table["prediction_log10"] = prediction
         table["error_dex"] = prediction - table.log10_Ne
         table.to_csv(output / f"{role}_predictions.csv", index=False)
+        if role == "withheld":
+            scores["withheld_by_time"] = [{"t_sec": float(t), **error_metrics(group.error_dex.to_numpy())}
+                                          for t, group in table.groupby("t_sec")]
     queries = pd.read_csv(contract.file("queries"))
+    if contract.withholding:
+        queries = withholding_support(queries, pd.read_csv(contract.file("train")),
+            contract.data["withholding"], contract.data["observation_cadence_sec"], pd.read_csv(contract.file("withheld")))
     truth = scene.evaluate(queries.x_km.to_numpy(), queries.y_km.to_numpy(), queries.t_sec.to_numpy())
     prediction = predict(queries.x_km.to_numpy(), queries.y_km.to_numpy(), queries.t_sec.to_numpy())
     queries["truth_log10"], queries["prediction_log10"] = truth["log10_Ne"], prediction
@@ -236,6 +276,11 @@ def analyze(contract, run, output, *, cpu=False):
              "low_interior": (fraction < lo) & ~patch, "high_interior": (fraction > hi) & ~patch}
     if "inside_common_radar_hull" in queries:
         masks["common_radar_interior"] = queries.inside_common_radar_hull.to_numpy()
+    if contract.withholding:
+        common = masks.get("common_radar_interior", masks["inside_hull"])
+        affected = queries.closer_to_withheld_beam.to_numpy() if contract.data["withholding"]["kind"] == "beams" else queries.inside_withheld_time_gap.to_numpy()
+        masks["common_radar_withholding_region"] = common & affected
+        masks["common_radar_other_region"] = common & ~affected
     distance = queries.nearest_training_km.to_numpy()
     for lower, upper in ((0, 25), (25, 50), (50, 100), (100, np.inf)):
         masks[f"distance_{lower}_{upper}_km"] = (distance >= lower) & (distance < upper)
@@ -247,7 +292,7 @@ def analyze(contract, run, output, *, cpu=False):
     pd.DataFrame(regional).to_csv(output / "regional_errors_dex.csv", index=False)
     scores["regions"] = regional
     primary = "common_radar_interior" if "common_radar_interior" in masks else "inside_hull"
-    primary_key = "primary_field_score" if contract.all_beam else "primary_development_field_score"
+    primary_key = "primary_field_score" if contract.final_update else "primary_development_field_score"
     scores[primary_key] = next(row for row in regional if row["region"] == primary)
     scores["density_predictions_outside_plot_limits"] = int(((prediction < log_min) | (prediction > log_max)).sum())
     n = settings["derivative_query_count"]
@@ -284,10 +329,20 @@ def analyze(contract, run, output, *, cpu=False):
                 (log_min, log_min, -error_bound), (log_max, log_max, error_bound)):
             image = ax.pcolormesh(xx, yy, z, shading="auto", cmap=cmap, vmin=lower, vmax=upper)
             training = geometry[geometry.role == "train"]
-            ax.scatter(training.x_km, training.y_km, c="white", edgecolors="black", s=9, linewidths=.4)
+            time_withheld = contract.withholding and t in contract.data["withholding"]["times_sec"]
+            if time_withheld:
+                ax.scatter(training.x_km, training.y_km, c="red", marker="x", s=15, linewidths=.6)
+            else:
+                ax.scatter(training.x_km, training.y_km, c="white", edgecolors="black", s=9, linewidths=.4)
+            if contract.withholding and contract.data["withholding"]["kind"] == "beams":
+                removed = geometry[geometry.role == "withheld"]
+                ax.scatter(removed.x_km, removed.y_km, c="red", marker="x", s=20, linewidths=.8)
             ax.set(title=title, xlabel="x (km)", ylabel="y (km)", aspect="equal")
             fig.colorbar(image, ax=ax, label="log10 density" if title != "error (dex)" else "dex")
-        fig.suptitle(f"{contract.data['case']} at {t / 3600:.4f} h; white dots = training locations")
+        label = "all measurements at this time withheld (red crosses)" if time_withheld else "white dots = training locations"
+        if contract.withholding and contract.data["withholding"]["kind"] == "beams":
+            label += "; red crosses = withheld beams"
+        fig.suptitle(f"{contract.data['case']} at {t / 3600:.4f} h; {label}")
         fig.savefig(output / f"map_{t:05d}s.png", dpi=140)
         plt.close(fig)
         np.savez_compressed(output / f"map_{t:05d}s.npz", x_km=xx, y_km=yy, truth_log10=true, prediction_log10=pred)
@@ -303,6 +358,9 @@ def analyze(contract, run, output, *, cpu=False):
         im = ax.pcolormesh(x, t / 3600, z, shading="auto", cmap="RdBu_r" if error else "viridis",
                            vmin=-bound if error else log_min, vmax=bound if error else log_max)
         ax.set(title=title, xlabel="x (km)", ylabel="time (hours)")
+        if contract.withholding:
+            for missing in contract.data["withholding"]["times_sec"]:
+                ax.axhline(missing / 3600, color="black", linestyle="--", linewidth=.6)
         fig.colorbar(im, ax=ax, label="dex" if error else "log10 density")
     fig.suptitle(f"Fixed cut y={settings['cut_y_km']} km")
     fig.savefig(output / "space_time_cut.png", dpi=140)
@@ -314,8 +372,9 @@ def analyze(contract, run, output, *, cpu=False):
     fig, axes = plt.subplots(1, 3, figsize=(13, 4), layout="constrained")
     axes[0].plot(history.step, history.data_loss, label="training minibatch MSE (normalized)")
     axes[0].set_yscale("log")
-    if contract.all_beam:
-        axes[1].text(.5, .5, "All beams and observation times used\nFixed final update; no withheld selection",
+    if contract.final_update:
+        message = "Separate withheld-data assessment\nFixed final update; no score selection" if contract.withholding else "All beams and observation times used\nFixed final update; no withheld selection"
+        axes[1].text(.5, .5, message,
                      ha="center", va="center", transform=axes[1].transAxes)
         axes[1].set_axis_off()
     else:

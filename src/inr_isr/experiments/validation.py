@@ -80,9 +80,12 @@ class ReconstructionMonitor(DevelopmentMonitor):
     """Fixed probes and final-update saving; no prediction-based model selection."""
 
     def __init__(self, contract, dataset, output):
-        if not contract.all_beam:
-            raise ValueError("ReconstructionMonitor requires an explicit all-beam contract")
-        contract.validate_all_beam_inputs()
+        if not contract.final_update:
+            raise ValueError("ReconstructionMonitor requires an explicit final-update contract")
+        if contract.all_beam:
+            contract.validate_all_beam_inputs()
+        else:
+            contract.validate_withholding_inputs()
         self.contract, self.dataset, self.output = contract, dataset, Path(output)
         self.window = ExperimentWindow.from_contract(contract).validate_inputs(contract)
         self.window.assert_times(dataset.df.t_sec, "all-beam training data")
@@ -94,7 +97,7 @@ class ReconstructionMonitor(DevelopmentMonitor):
         self.latest = self.best_step = None
         self.output.joinpath("experiment_contract.json").write_text(json.dumps(contract.data, indent=2) + "\n")
         self.output.joinpath("preprocessing.json").write_text(json.dumps({
-            "policy": "fit all coordinate and target limits on all supplied measurements; no clipping",
+            "policy": "fit all coordinate and target limits on all supplied measurements; no clipping" if contract.all_beam else "fit coordinate and target limits on supplied training rows only; no withheld targets; no clipping",
             "train_rows": dataset.n_samples, "coord_scalers": dataset.coord_scalers,
             "target_scaler": dataset.target_scaler}, indent=2) + "\n")
 
@@ -107,6 +110,8 @@ class ReconstructionMonitor(DevelopmentMonitor):
             "experiment_id": self.contract.data["id"],
             "experiment_contract_sha256": digest(self.contract.path)},
             self.output / "model_reconstruction.pt")
+        excluded = self.contract.data.get("withholding", {}) if self.contract.withholding else {}
         (self.output / "selection.json").write_text(json.dumps({
             "completed_updates": step, "rule": "final_update", "step": step,
-            "withheld_beams": 0, "withheld_times": 0, "score_based_selection": False}, indent=2) + "\n")
+            "withheld_beams": len(excluded.get("beam_indices", [])),
+            "withheld_times": len(excluded.get("times_sec", [])), "score_based_selection": False}, indent=2) + "\n")

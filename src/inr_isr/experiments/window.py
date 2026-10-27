@@ -61,7 +61,7 @@ class ExperimentWindow:
             raise ValueError('Time normalization differs from the configured window endpoints')
 
     def validate_inputs(self, contract):
-        for name in ("train", "development", "probes", "queries"):
+        for name in ("train", "development", "withheld", "source_observations", "probes", "queries"):
             if name not in contract.data["inputs"]:
                 continue
             frame = pd.read_csv(contract.file(name), usecols=["t_sec"])
