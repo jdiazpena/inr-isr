@@ -202,6 +202,9 @@ def feature_analysis(scene, predict, settings, output, training_geometry=None, *
 
 
 def analyze(contract, run, output, *, cpu=False):
+    if contract.radar:
+        from .radar_analysis import analyze_radar
+        return analyze_radar(contract, run, output, cpu=cpu)
     window = ExperimentWindow.from_contract(contract).validate_inputs(contract)
     device = resolve_device("cpu" if cpu else "cuda")
     checkpoint_path = Path(run) / ("model_reconstruction.pt" if contract.final_update else "model_best_development.pt")

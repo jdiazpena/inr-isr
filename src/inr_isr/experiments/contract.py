@@ -21,7 +21,7 @@ class Contract:
     def load(cls, path):
         path = Path(path).resolve()
         data = json.loads(path.read_text())
-        if data.get("schema") not in ("shared-xyt-development-1", "shared-xyt-reconstruction-1", "shared-xyt-withholding-1"):
+        if data.get("schema") not in ("shared-xyt-development-1", "shared-xyt-reconstruction-1", "shared-xyt-withholding-1", "shared-xyt-radar-reconstruction-1"):
             raise ValueError("Unknown experiment contract")
         roles = [set(data["roles"][name]) for name in ("train", "development", "reserved")]
         if data["schema"] == "shared-xyt-development-1":
@@ -36,6 +36,9 @@ class Contract:
             contract.validate_all_beam_inputs()
         elif contract.withholding:
             contract.validate_withholding_inputs()
+        elif contract.radar:
+            from .radar import validate_radar_inputs
+            validate_radar_inputs(contract)
         return contract
 
     @property
@@ -47,8 +50,12 @@ class Contract:
         return self.data.get("schema") == "shared-xyt-withholding-1"
 
     @property
+    def radar(self):
+        return self.data.get("schema") == "shared-xyt-radar-reconstruction-1"
+
+    @property
     def final_update(self):
-        return self.all_beam or self.withholding
+        return self.all_beam or self.withholding or self.radar
 
     def validate_withholding_inputs(self):
         """An exact, explicitly declared observation partition; never a selection set."""

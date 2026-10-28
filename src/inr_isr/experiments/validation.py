@@ -84,20 +84,23 @@ class ReconstructionMonitor(DevelopmentMonitor):
             raise ValueError("ReconstructionMonitor requires an explicit final-update contract")
         if contract.all_beam:
             contract.validate_all_beam_inputs()
+        elif contract.radar:
+            from .radar import validate_radar_inputs
+            validate_radar_inputs(contract, dataset=dataset)
         else:
             contract.validate_withholding_inputs()
         self.contract, self.dataset, self.output = contract, dataset, Path(output)
         self.window = ExperimentWindow.from_contract(contract).validate_inputs(contract)
         self.window.assert_times(dataset.df.t_sec, "all-beam training data")
         self.window.assert_scalers(dataset.coord_scalers, True)
-        if digest(dataset.csv_path) != contract.data["inputs"]["train"]["sha256"]:
+        if not contract.radar and digest(dataset.csv_path) != contract.data["inputs"]["train"]["sha256"]:
             raise ValueError("Dataset differs from the all-beam training input")
         if dataset.n_samples != len(pd.read_csv(contract.file("train"))):
             raise ValueError("Dataset silently removed observations")
         self.latest = self.best_step = None
         self.output.joinpath("experiment_contract.json").write_text(json.dumps(contract.data, indent=2) + "\n")
         self.output.joinpath("preprocessing.json").write_text(json.dumps({
-            "policy": "fit all coordinate and target limits on all supplied measurements; no clipping" if contract.all_beam else "fit coordinate and target limits on supplied training rows only; no withheld targets; no clipping",
+            "policy": "fit all coordinate and target limits on all supplied measurements; no clipping" if contract.all_beam or contract.radar else "fit coordinate and target limits on supplied training rows only; no withheld targets; no clipping",
             "train_rows": dataset.n_samples, "coord_scalers": dataset.coord_scalers,
             "target_scaler": dataset.target_scaler}, indent=2) + "\n")
 

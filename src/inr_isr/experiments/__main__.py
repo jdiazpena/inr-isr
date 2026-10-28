@@ -11,7 +11,10 @@ from inr_isr.synthetic.records import runtime_identity, save_json, utc_now
 def train(contract, output, smoke=False, cpu=False):
     from .window import ExperimentWindow
     ExperimentWindow.from_contract(contract).validate_inputs(contract)
-    from synthetic_train_3d import build_parser, build_dataset, plot_history, plot_diagnostics, plot_xy_prediction_at_time
+    if contract.radar:
+        from train_radar_3d_window_reference_reg_diagnostic import build_parser, build_dataset, plot_history, plot_diagnostics, plot_xy_prediction_at_time
+    else:
+        from synthetic_train_3d import build_parser, build_dataset, plot_history, plot_diagnostics, plot_xy_prediction_at_time
     from training_engine import train_window
     args = build_parser().parse_args([])
     for key, value in contract.data["training"].items():
@@ -21,7 +24,10 @@ def train(contract, output, smoke=False, cpu=False):
     if contract.data["objective"] == "data_only" and (
         args.lambda_curv_xy != 0 or args.lambda_curv_t != 0 or args.reference_loss_weights):
         raise ValueError("Data-only contract has an active prior")
-    args.synthetic_csv = str(contract.file("train"))
+    if contract.radar:
+        args.h5_path = str(contract.file("hdf5"))
+    else:
+        args.synthetic_csv = str(contract.file("train"))
     args.output_dir = str(output)
     args.cpu = cpu
     if smoke:
@@ -50,6 +56,11 @@ def main():
               "runtime": runtime_identity()}
     try:
         contract = Contract.load(args.contract)
+        if getattr(contract, "radar", False):
+            from inr_isr.synthetic.records import file_identity
+            record["input_kind"] = "native_radar_hdf5"
+            record["execution_source_files"] = [file_identity(p) for p in
+                sorted(Path(__file__).resolve().parents[2].rglob("*.py"))]
         if args.action == "train":
             train(contract, args.output, args.smoke, args.cpu)
         else:

@@ -330,7 +330,7 @@ def train(args: argparse.Namespace) -> None:
         plot_history_fn=plot_history,
         plot_diagnostics_fn=plot_diagnostics,
         plot_prediction_fn=plot_xy_prediction_at_time,
-        diagnostics_without_regularization=False,
+        diagnostics_without_regularization=True,
     )
 
 
