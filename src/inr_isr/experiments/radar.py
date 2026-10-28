@@ -88,6 +88,10 @@ def validate_radar_inputs(contract, dataset=None):
         raise ValueError("Native HDF path differs from the contracted source")
     if dataset is None:
         dataset = native_dataset(source, training)
+    if contract.weighting_definition()['data_weighting'] == 'reported_dNe':
+        uncertainties = dataset.df[['Ne', 'dNe']].to_numpy()
+        if not np.isfinite(uncertainties).all() or not (uncertainties > 0).all():
+            raise ValueError('Every retained observation needs finite positive Ne/dNe; no silent uncertainty filter')
     if Path(dataset.h5_path).resolve() != source:
         raise ValueError("Dataset belongs to another radar source")
     actual = source_summary(source, training, dataset)

@@ -26,6 +26,9 @@ from inr_isr.training.steps import (
     data_objective, data_objective_lineardata, validate_data_loss_definition,
     validate_lineardata_target_scaler, compose_xyt_loss, parameter_update,
 )
+from inr_isr.training.uncertainties import (
+    weighting_definition, density_uncertainty_sigma, uncertainty_data_objective,
+)
 from training_common import (
     append_csv_row,
     clamp_float,
@@ -71,6 +74,8 @@ def train_window(
     data_loss_definition = validate_data_loss_definition(
         getattr(args, 'data_loss_domain', 'log'),
         getattr(args, 'linear_density_reference', None))
+    data_weighting_definition = weighting_definition(getattr(args, 'data_weighting', 'equal'))
+    reported_weighting = data_weighting_definition['data_weighting'] == 'reported_dNe'
 
     # This call must remain before collocation sampling and model construction. Their
     # random-number order is part of reproducible training behavior.
@@ -91,6 +96,9 @@ def train_window(
     config = vars(args).copy()
     config.update(data_loss_definition)
     config['data_loss_definition'] = data_loss_definition.copy()
+    if hasattr(args, 'data_weighting'):
+        config.update(data_weighting_definition)
+        config['data_weighting_definition'] = data_weighting_definition.copy()
 
     config_path = out_dir / "run_config.json"
 
@@ -122,6 +130,29 @@ def train_window(
     full_coords = sample["coords"].to(device)
     full_values = sample["values"].to(device)
 
+    if reported_weighting:
+        if dataset.target_scaler.get('column') != 'log10_Ne' or not dataset.normalize_values:
+            raise ValueError('Reported-dNe weighting requires normalized log10_Ne targets')
+        raw = dataset.df[['Ne', 'dNe']].to_numpy(dtype=np.float64)
+        ne = torch.as_tensor(raw[:, :1].copy(), dtype=full_values.dtype, device=device)
+        dne = torch.as_tensor(raw[:, 1:].copy(), dtype=full_values.dtype, device=device)
+        full_sigma = density_uncertainty_sigma(ne, dne, target_scaler=dataset.target_scaler,
+                                               **data_loss_definition)
+        relative = raw[:, 1] / raw[:, 0]
+        uncertainty_summary = {
+            'data_weighting_definition': data_weighting_definition,
+            'retained_rows': len(raw), 'additional_rows_filtered': 0,
+            'relative_dNe_min': float(relative.min()),
+            'relative_dNe_median': float(np.median(relative)),
+            'relative_dNe_max': float(relative.max()),
+            'relative_dNe_above_half': int((relative > .5).sum()),
+            'sigma_residual_units_min': float(full_sigma.min().item()),
+            'sigma_residual_units_max': float(full_sigma.max().item()),
+            'limitation': 'Log uncertainty is first-order; reported fit errors do not establish full instrument accuracy.'}
+        (out_dir / 'uncertainty_summary.json').write_text(json.dumps(uncertainty_summary, indent=2))
+        # Sample values and uncertainty together: one index draw, no extra RNG.
+        full_values_and_sigma = torch.cat((full_values, full_sigma), dim=1)
+
     df = dataset.df.copy()
 
     n_total = full_coords.shape[0]
@@ -132,7 +163,10 @@ def train_window(
     print(f"  coords shape:    {tuple(full_coords.shape)}")
     print(f"  values shape:    {tuple(full_values.shape)}")
     print(f"  time records:    {df['time_index'].nunique()}")
-    if data_loss_definition['data_loss_domain'] == 'linear':
+    if reported_weighting:
+        print(f"  data loss:       {data_loss_definition['data_loss_domain']} density; reported-dNe standardized residuals")
+        print("  uncertainty:     first-order conversion for log; no floor, cap or row filtering")
+    elif data_loss_definition['data_loss_domain'] == 'linear':
         print(f"  data loss:       linear density MSE; reference={data_loss_definition['linear_density_reference']:g} m^-3")
     else:
         print("  data loss:       normalized log10 density MSE (default)")
@@ -436,18 +470,28 @@ def train_window(
     for step in pbar:
         model.train()
 
-        batch_coords, batch_values = sample_batch(
-            full_coords,
-            full_values,
-            args.batch_size,
-        )
+        if reported_weighting:
+            batch_coords, batch_values_and_sigma = sample_batch(
+                full_coords, full_values_and_sigma, args.batch_size)
+            batch_values = batch_values_and_sigma[:, :1]
+            batch_sigma = batch_values_and_sigma[:, 1:]
+        else:
+            batch_coords, batch_values = sample_batch(
+                full_coords,
+                full_values,
+                args.batch_size,
+            )
         if step == 1:
             execution = device_record(requested_device, device, model=model,
                                       batch=batch_coords, dtype=batch_coords.dtype)
             execution["target_device"] = str(batch_values.device)
             (out_dir / "execution_device.json").write_text(json.dumps(execution, indent=2))
 
-        if data_loss_definition['data_loss_domain'] == 'linear':
+        if reported_weighting:
+            pred, data_loss = uncertainty_data_objective(
+                model, batch_coords, batch_values, batch_sigma,
+                target_scaler=dataset.target_scaler, **data_loss_definition)
+        elif data_loss_definition['data_loss_domain'] == 'linear':
             pred, data_loss = data_objective_lineardata(
                 model, batch_coords, batch_values, target_scaler=dataset.target_scaler,
                 linear_density_reference=data_loss_definition['linear_density_reference'],

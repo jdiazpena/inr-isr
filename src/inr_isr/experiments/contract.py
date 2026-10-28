@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from inr_isr.training.steps import validate_data_loss_definition, validate_lineardata_target_scaler
+from inr_isr.training.uncertainties import weighting_definition
 
 
 def digest(path):
@@ -33,6 +34,7 @@ class Contract:
             raise ValueError("All-beam reconstruction requires all training, zero withheld and final-update saving")
         contract = cls(path, data)
         contract.loss_definition()
+        contract.weighting_definition()
         for name in data["inputs"]:
             contract.file(name)
         if contract.all_beam:
@@ -81,6 +83,14 @@ class Contract:
             config.get("data_loss_domain", "log"), config.get("linear_density_reference"))
         if actual != expected:
             raise ValueError("Checkpoint data-loss definition differs from the experiment contract")
+        expected_weighting = self.weighting_definition()
+        actual_weighting = weighting_definition(config.get('data_weighting', 'equal'))
+        if actual_weighting != expected_weighting:
+            raise ValueError('Checkpoint data weighting differs from the experiment contract')
+        recorded = config.get('data_weighting_definition')
+        if (recorded is not None and recorded != actual_weighting) or (
+                actual_weighting['data_weighting'] == 'reported_dNe' and recorded is None):
+            raise ValueError('Checkpoint requires consistent explicit reported-error metadata')
         if "data_loss_definition" in config and config["data_loss_definition"] != actual:
             raise ValueError("Checkpoint data-loss metadata differs from its effective settings")
         if actual["data_loss_domain"] == "linear":
@@ -95,6 +105,15 @@ class Contract:
                     or (requested is not None and actual not in (3, requested))):
                 raise ValueError("Final checkpoint update differs from the requested training budget")
         return expected
+
+    def weighting_definition(self):
+        definition = weighting_definition(self.data.get('training', {}).get('data_weighting', 'equal'))
+        if definition['data_weighting'] != 'equal' and not self.radar:
+            raise ValueError('Reported-dNe contracts require native radar observations')
+        if ('data_weighting_definition' in self.data
+                and self.data['data_weighting_definition'] != definition):
+            raise ValueError('Contract data-weighting metadata differs from its training settings')
+        return definition
 
     def validate_withholding_inputs(self):
         """An exact, explicitly declared observation partition; never a selection set."""

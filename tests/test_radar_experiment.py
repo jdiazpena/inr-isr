@@ -116,6 +116,37 @@ class RadarChecks(TestCase):
             self.assertTrue(kwargs['diagnostics_without_regularization'])
             self.assertEqual(kwargs['dataset_factory'].__module__,'train_radar_3d_window_reference_reg_diagnostic')
 
+    def test_reported_uncertainty_cannot_silently_filter_missing_errors(self):
+        with TemporaryDirectory() as tmp:
+            root=Path(tmp);data,_=self.fixture(root)
+            data['training']['data_weighting']='reported_dNe'
+            with self.assertRaisesRegex(ValueError,'finite positive'):
+                self.load(root,data)
+
+    def test_linear_reported_uncertainty_dispatch_uses_native_shared_engine(self):
+        from inr_isr.experiments.__main__ import train
+        from inr_isr.training.uncertainties import weighting_definition
+        with TemporaryDirectory() as tmp:
+            root=Path(tmp);data,_=self.fixture(root)
+            with h5py.File(root/'radar.h5','r+') as f:
+                ne=f['FittedParams/Ne'][()]
+                f['FittedParams/dNe'][...]=np.where(np.isfinite(ne),ne*.1,1.)
+            data['inputs']['hdf5']['sha256']=digest(root/'radar.h5')
+            ds=native_dataset(root/'radar.h5',data['training'])
+            ds.df.to_csv(root/'train.csv',index=False)
+            data['inputs']['train']['sha256']=digest(root/'train.csv')
+            data['training'].update(data_weighting='reported_dNe',data_loss_domain='linear',
+                                    linear_density_reference=1e12)
+            data['data_weighting_definition']=weighting_definition('reported_dNe')
+            contract=self.load(root,data)
+            with patch('training_engine.train_window') as engine:
+                train(contract,root/'run',smoke=True,cpu=True)
+            args=engine.call_args.args[0]
+            self.assertEqual(args.data_weighting,'reported_dNe')
+            self.assertEqual(args.data_loss_domain,'linear')
+            self.assertEqual(args.target_col,'log10_Ne')
+            self.assertTrue(engine.call_args.kwargs['diagnostics_without_regularization'])
+
     def test_final_saving_and_fixed_probes_do_not_select_or_consume_rng(self):
         with TemporaryDirectory() as tmp:
             root=Path(tmp);data,ds=self.fixture(root);contract=self.load(root,data);run=root/'run';run.mkdir()
@@ -145,7 +176,7 @@ class RadarChecks(TestCase):
             (run/'selection.json').write_text(json.dumps({'rule':'final_update','step':3,'completed_updates':3,
                 'score_based_selection':False,'withheld_beams':0,'withheld_times':0}))
             (run/'model_reconstruction.pt').write_bytes(b'analytic fixture, no network')
-            checkpoint={'step':3,'checkpoint_type':'final_reconstruction_after_update','experiment_id':data['id'],
+            checkpoint={'step':3,'config':effective,'checkpoint_type':'final_reconstruction_after_update','experiment_id':data['id'],
                 'experiment_contract_sha256':digest(contract.path),'coord_scalers':ds.coord_scalers,'target_scaler':ds.target_scaler}
             columns=['fxx_rms','fxy_rms','fyy_rms','ftt_rms','grad_norm_total','grad_norm_data']
             pd.DataFrame({'step':[1,3],'data_loss':[1.,.5],'total_loss':[1.,.5],**{c:[1.,1.] for c in columns}}).to_csv(run/'history.csv',index=False)

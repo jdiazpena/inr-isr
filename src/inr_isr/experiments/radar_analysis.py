@@ -43,6 +43,7 @@ def support(table, measurements, origin):
 def final_checkpoint(contract, run, device):
     path = Path(run)/"model_reconstruction.pt"
     checkpoint = torch_load_checkpoint(path, device)
+    contract.validate_checkpoint_loss(checkpoint)
     selection = json.loads((Path(run)/"selection.json").read_text())
     effective = json.loads((Path(run)/"run_config.json").read_text())
     if (checkpoint.get("experiment_contract_sha256") != digest(contract.path)
@@ -105,6 +106,11 @@ def analyze_radar(contract, run, output, *, cpu=False):
 
     obs["prediction_log10"] = prediction(obs)
     obs["residual_dex"] = obs.prediction_log10-obs.log10_Ne
+    if contract.weighting_definition()['data_weighting'] == 'reported_dNe':
+        obs['sigma_log10'] = obs.dNe / (obs.Ne * np.log(10.))
+        obs['standardized_log_residual'] = obs.residual_dex / obs.sigma_log10
+        with np.errstate(over='raise', invalid='raise'):
+            obs['standardized_linear_residual'] = (np.power(10., obs.prediction_log10) - obs.Ne) / obs.dNe
     obs.to_csv(output/"measurement_residuals.csv",index=False)
     by_beam = grouped_metrics(obs.prediction_log10.to_numpy(),obs.log10_Ne.to_numpy(),obs.beam_index.to_numpy())
     pd.DataFrame(by_beam["per_beam"]).rename(columns={"beam_id":"beam_index"}).to_csv(output/"residuals_by_beam.csv",index=False)
@@ -178,6 +184,8 @@ def analyze_radar(contract, run, output, *, cpu=False):
         "execution_check_only":checkpoint["step"] != contract.data["training"]["num_steps"],
         "experiment_contract_sha256":digest(contract.path),"score_based_selection":False,
         "source":contract.data["inputs"]["hdf5"],"measurement_policy":contract.data["measurement_policy"],
+        "data_loss_definition":contract.loss_definition(),
+        "data_weighting_definition":contract.weighting_definition(),
         "observations":contract.data["observation_summary"],"withheld_beams":0,"withheld_times":0,
         "measurement_fit":by_beam,"time_window_sec":[window.start,window.end],
         "comparison_unix_bounds":common,"derivative_magnitudes":derivative_summary,
@@ -188,6 +196,12 @@ def analyze_radar(contract, run, output, *, cpu=False):
             "The selected native gates span an altitude band, not an exact constant-altitude plane.",
             "The hull is geometric support; sparse beams and local invalid samples still leave gaps.",
             "Two integration products of one event are not independent experiments."]}
+    if contract.weighting_definition()['data_weighting'] == 'reported_dNe':
+        summary['standardized_measurement_residuals'] = {
+            'log_mean_square':float(np.mean(obs.standardized_log_residual ** 2)),
+            'linear_mean_square':float(np.mean(obs.standardized_linear_residual ** 2)),
+            'relative_dNe_max':float((obs.dNe / obs.Ne).max()),
+            'meaning':'Descriptive compatibility with reported errors; not validated chi-square, coverage or plasma truth.'}
     (output/"summary.json").write_text(json.dumps(summary,indent=2,allow_nan=False)+"\n")
     (output/"execution_device.json").write_text(json.dumps(device_record("cpu" if cpu else "cuda",device,model=model),indent=2)+"\n")
     print(f"Real analysis complete: {output}; final completed update {checkpoint['step']}")
