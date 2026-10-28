@@ -22,7 +22,10 @@ from tqdm import tqdm
 from models import MLPINR
 from inr_isr.device import resolve_device, device_record
 from inr_isr.training.controllers import update_xyt_weights
-from inr_isr.training.steps import data_objective, compose_xyt_loss, parameter_update
+from inr_isr.training.steps import (
+    data_objective, data_objective_lineardata, validate_data_loss_definition,
+    validate_lineardata_target_scaler, compose_xyt_loss, parameter_update,
+)
 from training_common import (
     append_csv_row,
     clamp_float,
@@ -53,7 +56,9 @@ def train_window(
 ) -> None:
     """Train one x-y-time SIREN window without changing experiment semantics.
 
-    The measured-point objective is MSE in normalized log10 electron density. The
+    The default measured-point objective is normalized-log10 MSE. The explicitly
+    selected linear alternative inverts target normalization and compares density
+    in a declared common reference unit; model output remains normalized log10. The
     optional spatial and temporal terms penalize second derivatives at collocation
     coordinates. They are soft smoothness priors, not equations of plasma motion.
     Reference-ratio mode adapts each lambda against a stabilized data-loss reference.
@@ -62,6 +67,10 @@ def train_window(
     inputs therefore use the same SIREN, optimizer, loss equations, checkpointing,
     and diagnostics.
     """
+
+    data_loss_definition = validate_data_loss_definition(
+        getattr(args, 'data_loss_domain', 'log'),
+        getattr(args, 'linear_density_reference', None))
 
     # This call must remain before collocation sampling and model construction. Their
     # random-number order is part of reproducible training behavior.
@@ -80,6 +89,8 @@ def train_window(
 
     # Save the effective flat CLI/config values needed to reproduce this exact run.
     config = vars(args).copy()
+    config.update(data_loss_definition)
+    config['data_loss_definition'] = data_loss_definition.copy()
 
     config_path = out_dir / "run_config.json"
 
@@ -92,6 +103,10 @@ def train_window(
     # 1. Load one time window
     # ------------------------------------------------------------
     dataset = dataset_factory(args)
+
+    if data_loss_definition['data_loss_domain'] == 'linear':
+        validate_lineardata_target_scaler(
+            dataset.target_scaler, normalize_values=getattr(dataset, 'normalize_values', False))
 
     dataset.summary()
 
@@ -117,6 +132,10 @@ def train_window(
     print(f"  coords shape:    {tuple(full_coords.shape)}")
     print(f"  values shape:    {tuple(full_values.shape)}")
     print(f"  time records:    {df['time_index'].nunique()}")
+    if data_loss_definition['data_loss_domain'] == 'linear':
+        print(f"  data loss:       linear density MSE; reference={data_loss_definition['linear_density_reference']:g} m^-3")
+    else:
+        print("  data loss:       normalized log10 density MSE (default)")
 
     if args.batch_size <= 0 or args.batch_size >= n_total:
         print("  training mode:   full batch")
@@ -428,7 +447,13 @@ def train_window(
             execution["target_device"] = str(batch_values.device)
             (out_dir / "execution_device.json").write_text(json.dumps(execution, indent=2))
 
-        pred, data_loss = data_objective(model, batch_coords, batch_values, recipe="xyt")
+        if data_loss_definition['data_loss_domain'] == 'linear':
+            pred, data_loss = data_objective_lineardata(
+                model, batch_coords, batch_values, target_scaler=dataset.target_scaler,
+                linear_density_reference=data_loss_definition['linear_density_reference'],
+                normalize_values=dataset.normalize_values)
+        else:
+            pred, data_loss = data_objective(model, batch_coords, batch_values, recipe="xyt")
 
         if use_xy_curv or use_t_curv:
             coords_col = sample_collocation_points(

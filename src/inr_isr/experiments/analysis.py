@@ -211,6 +211,7 @@ def analyze(contract, run, output, *, cpu=False):
     checkpoint = torch_load_checkpoint(checkpoint_path, device)
     if checkpoint.get("experiment_contract_sha256") != digest(contract.path):
         raise ValueError("Selected model belongs to another experiment contract")
+    loss_definition = contract.validate_checkpoint_loss(checkpoint)
     if contract.final_update:
         selection = json.loads((Path(run) / "selection.json").read_text())
         if (checkpoint.get("checkpoint_type") != "final_reconstruction_after_update"
@@ -247,7 +248,11 @@ def analyze(contract, run, output, *, cpu=False):
 
     scores = {"checkpoint": {"path": str(checkpoint_path), "sha256": digest(checkpoint_path), "step": checkpoint["step"]},
               "role": "all-beam synthetic development; no withheld measurements or independent final test" if contract.all_beam else "development; reserved observations not opened",
-              "density_units": "dex", "observations": {}}
+              "density_units": "dex", "observations": {},
+              "data_loss_definition": loss_definition,
+              "execution_check_only": checkpoint["step"] == 3,
+              "data_loss_units": "dimensionless squared normalized log10 density" if loss_definition["data_loss_domain"] == "log" else "dimensionless squared density divided by fixed density reference",
+              "linear_density_reference_units": "m^-3" if loss_definition["data_loss_domain"] == "linear" else None}
     if contract.withholding:
         scores.update(role="separate withholding assessment; fixed final model; development evidence, not independent final validation",
                       withholding=contract.data["withholding"], score_based_selection=False)
@@ -373,7 +378,10 @@ def analyze(contract, run, output, *, cpu=False):
     scores["time_window_sec"] = [window.start, window.end]
     history = pd.read_csv(Path(run) / "history.csv")
     fig, axes = plt.subplots(1, 3, figsize=(13, 4), layout="constrained")
-    axes[0].plot(history.step, history.data_loss, label="training minibatch MSE (normalized)")
+    loss_label = ("training minibatch MSE (normalized log10 density)"
+                  if loss_definition["data_loss_domain"] == "log" else
+                  f"training minibatch MSE (density / {loss_definition['linear_density_reference']:g} m^-3)")
+    axes[0].plot(history.step, history.data_loss, label=loss_label)
     axes[0].set_yscale("log")
     if contract.final_update:
         message = "Separate withheld-data assessment\nFixed final update; no score selection" if contract.withholding else "All beams and observation times used\nFixed final update; no withheld selection"

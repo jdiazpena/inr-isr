@@ -367,6 +367,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hidden_omega_0", type=float, default=5.0)
 
     # Training
+    parser.add_argument(
+        "--data_loss_domain", choices=["log", "linear"], default="log",
+        help="Data residual domain: existing normalized-log MSE, or explicit linear-density comparison.",
+    )
+    parser.add_argument(
+        "--linear_density_reference", type=float, default=None,
+        help="Required fixed density reference in m^-3 for linear data loss; leave unset for log loss.",
+    )
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument(
         "--batch_size",

@@ -6,6 +6,8 @@ from pathlib import Path
 
 import numpy as np
 
+from inr_isr.training.steps import validate_data_loss_definition, validate_lineardata_target_scaler
+
 
 def digest(path):
     with Path(path).open("rb") as stream:
@@ -30,6 +32,7 @@ class Contract:
         elif not roles[0] or roles[1] or roles[2] or data.get("checkpoint_policy") != "final_update":
             raise ValueError("All-beam reconstruction requires all training, zero withheld and final-update saving")
         contract = cls(path, data)
+        contract.loss_definition()
         for name in data["inputs"]:
             contract.file(name)
         if contract.all_beam:
@@ -56,6 +59,42 @@ class Contract:
     @property
     def final_update(self):
         return self.all_beam or self.withholding or self.radar
+
+    def loss_definition(self):
+        """Resolve old omitted selectors as log; reject ambiguous new objectives."""
+        training = self.data.get("training", {})
+        definition = validate_data_loss_definition(
+            training.get("data_loss_domain", "log"),
+            training.get("linear_density_reference"))
+        if ("data_loss_definition" in self.data
+                and self.data["data_loss_definition"] != definition):
+            raise ValueError("Contract data-loss metadata differs from its training settings")
+        if definition["data_loss_domain"] == "linear" and training.get("target_col") != "log10_Ne":
+            raise ValueError("Linear-density fitting requires target_col=log10_Ne")
+        return definition
+
+    def validate_checkpoint_loss(self, checkpoint):
+        """Check objective and final budget before analysis constructs any model."""
+        expected = self.loss_definition()
+        config = checkpoint.get("config", {})
+        actual = validate_data_loss_definition(
+            config.get("data_loss_domain", "log"), config.get("linear_density_reference"))
+        if actual != expected:
+            raise ValueError("Checkpoint data-loss definition differs from the experiment contract")
+        if "data_loss_definition" in config and config["data_loss_definition"] != actual:
+            raise ValueError("Checkpoint data-loss metadata differs from its effective settings")
+        if actual["data_loss_domain"] == "linear":
+            if config.get("data_loss_definition") != actual or config.get("target_col") != "log10_Ne":
+                raise ValueError("Linear checkpoint requires explicit objective metadata and log10_Ne target")
+            validate_lineardata_target_scaler(checkpoint.get("target_scaler", {}),
+                                            normalize_values=config.get("normalize_values", True))
+        if self.final_update:
+            requested = self.data.get("training", {}).get("num_steps")
+            actual = config.get("num_steps")
+            if ((actual is not None and checkpoint.get("step") != actual)
+                    or (requested is not None and actual not in (3, requested))):
+                raise ValueError("Final checkpoint update differs from the requested training budget")
+        return expected
 
     def validate_withholding_inputs(self):
         """An exact, explicitly declared observation partition; never a selection set."""

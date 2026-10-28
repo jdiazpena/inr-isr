@@ -6,9 +6,12 @@ These shared operations do not introduce a scheduler, dropout or physical law.
 """
 from __future__ import annotations
 from collections.abc import Callable,Sequence
+import math
+from numbers import Real
 from typing import Literal
 import torch
 import torch.nn.functional as functional
+from inr_isr.transforms import affine_inverse
 Recipe=Literal['xyt','xyzt']
 
 
@@ -26,6 +29,97 @@ forward; no source/dimension inference, coercion, random draw or extra model cal
     prediction=model(points)
     loss=functional.mse_loss(prediction,targets) if recipe=='xyt' else torch.mean((prediction-targets)**2)
     return prediction,loss
+
+
+def validate_data_loss_definition(data_loss_domain='log', linear_density_reference=None):
+    """Resolve explicit data-loss units without fitting scales or changing weights.
+
+    Missing historical selectors mean the original normalized-log MSE. Linear
+    fitting requires a declared fixed density reference in m^-3; it is a common
+    numerical unit, not an observation-dependent uncertainty or weight.
+    """
+    if data_loss_domain not in ('log', 'linear'):
+        raise ValueError("data_loss_domain must be 'log' or 'linear'")
+    if data_loss_domain == 'log':
+        if linear_density_reference is not None:
+            raise ValueError('Log data loss requires linear_density_reference=None')
+        reference = None
+    else:
+        if (isinstance(linear_density_reference, bool)
+                or not isinstance(linear_density_reference, Real)
+                or not math.isfinite(linear_density_reference)
+                or linear_density_reference <= 0):
+            raise ValueError('Linear data loss requires a finite positive linear_density_reference in m^-3')
+        reference = float(linear_density_reference)
+    return {'data_loss_domain': data_loss_domain, 'linear_density_reference': reference}
+
+
+def validate_lineardata_target_scaler(target_scaler, *, normalize_values=True):
+    """Require the selected-window normalized log10 target and a valid inverse.
+
+    This deliberately accepts the3D scalar min/max schema, not the serialized4D
+    scaler. No clipping, replacement limits or inferred target units are allowed.
+    """
+    if normalize_values is not True:
+        raise ValueError('Linear data loss requires normalized log10_Ne targets')
+    if not isinstance(target_scaler, dict) or target_scaler.get('column') != 'log10_Ne':
+        raise ValueError('Linear data loss requires a log10_Ne target scaler')
+    minimum, maximum = target_scaler.get('min'), target_scaler.get('max')
+    if (isinstance(minimum, bool) or isinstance(maximum, bool)
+            or not isinstance(minimum, Real) or not isinstance(maximum, Real)
+            or not math.isfinite(minimum) or not math.isfinite(maximum)
+            or maximum <= minimum or not math.isfinite(maximum - minimum)):
+        raise ValueError('Linear data loss requires finite target min/max with max > min')
+    return float(minimum), float(maximum)
+
+
+def density_mse_lineardata(prediction: torch.Tensor, targets: torch.Tensor, *,
+                          target_scaler, linear_density_reference,
+                          normalize_values=True) -> torch.Tensor:
+    """Equally weighted density MSE, retaining normalized-log network tensors.
+
+    First invert the saved target affine map to physical log10(Ne/m^-3), then
+    exponentiate in the declared common reference unit. The residual is never
+    logged again. Inputs retain dtype/device and gradients; no detached NumPy
+    conversion, clipping, observation weights, RNG or optimizer is involved.
+    """
+    definition = validate_data_loss_definition('linear', linear_density_reference)
+    minimum, maximum = validate_lineardata_target_scaler(
+        target_scaler, normalize_values=normalize_values)
+    if (prediction.shape != targets.shape or prediction.ndim != 2
+            or prediction.shape[1] != 1 or prediction.numel() == 0):
+        raise ValueError('Linear data loss requires matching nonempty [N,1] tensors')
+    if (not prediction.is_floating_point() or not targets.is_floating_point()
+            or prediction.dtype != targets.dtype or prediction.device != targets.device):
+        raise ValueError('Linear data loss requires matching floating tensor dtype and device')
+    if not bool(torch.isfinite(prediction).all() & torch.isfinite(targets).all()):
+        raise FloatingPointError('Nonfinite linear data loss inputs; predictions and targets must be finite')
+    reference_log10 = math.log10(definition['linear_density_reference'])
+    prediction_log10 = affine_inverse(prediction, minimum, maximum)
+    target_log10 = affine_inverse(targets, minimum, maximum)
+    prediction_density = torch.pow(10.0, prediction_log10 - reference_log10)
+    target_density = torch.pow(10.0, target_log10 - reference_log10)
+    loss = functional.mse_loss(prediction_density, target_density)
+    if not bool(torch.isfinite(loss)):
+        raise FloatingPointError('Nonfinite linear data loss; predictions are not clipped or rescaled automatically')
+    return loss
+
+
+def data_objective_lineardata(model, points: torch.Tensor, targets: torch.Tensor, *,
+                             target_scaler, linear_density_reference,
+                             normalize_values=True) -> tuple[torch.Tensor, torch.Tensor]:
+    """One forward followed by linear-density MSE; return normalized-log output.
+
+    The existing log objective and native3D/4D execution recipes remain unchanged.
+    Configuration errors fail before the callable is evaluated.
+    """
+    validate_data_loss_definition('linear', linear_density_reference)
+    validate_lineardata_target_scaler(target_scaler, normalize_values=normalize_values)
+    prediction = model(points)
+    loss = density_mse_lineardata(prediction, targets, target_scaler=target_scaler,
+                                linear_density_reference=linear_density_reference,
+                                normalize_values=normalize_values)
+    return prediction, loss
 
 
 def compose_xyt_loss(data_loss: torch.Tensor, weighted_xy: torch.Tensor,
