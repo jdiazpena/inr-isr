@@ -26,6 +26,9 @@ def train(contract, output, smoke=False, cpu=False):
         raise ValueError("Data-only contract has an active prior")
     if contract.radar:
         args.h5_path = str(contract.file("hdf5"))
+        if contract.radar_withholding:
+            from .radar_withholding import training_dataset
+            build_dataset = lambda _: training_dataset(contract)
     else:
         args.synthetic_csv = str(contract.file("train"))
     args.output_dir = str(output)

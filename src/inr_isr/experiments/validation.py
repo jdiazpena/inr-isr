@@ -100,7 +100,7 @@ class ReconstructionMonitor(DevelopmentMonitor):
         self.latest = self.best_step = None
         self.output.joinpath("experiment_contract.json").write_text(json.dumps(contract.data, indent=2) + "\n")
         self.output.joinpath("preprocessing.json").write_text(json.dumps({
-            "policy": "fit all coordinate and target limits on all supplied measurements; no clipping" if contract.all_beam or contract.radar else "fit coordinate and target limits on supplied training rows only; no withheld targets; no clipping",
+            "policy": "fit all coordinate and target limits on all supplied measurements; no clipping" if contract.all_beam or (contract.radar and not contract.radar_withholding) else "fit coordinate and target limits on supplied training rows only; no withheld targets; no clipping",
             "train_rows": dataset.n_samples, "coord_scalers": dataset.coord_scalers,
             "target_scaler": dataset.target_scaler}, indent=2) + "\n")
 
@@ -113,7 +113,7 @@ class ReconstructionMonitor(DevelopmentMonitor):
             "experiment_id": self.contract.data["id"],
             "experiment_contract_sha256": digest(self.contract.path)},
             self.output / "model_reconstruction.pt")
-        excluded = self.contract.data.get("withholding", {}) if self.contract.withholding else {}
+        excluded = self.contract.data.get("withholding", {}) if self.contract.withholding or self.contract.radar_withholding else {}
         (self.output / "selection.json").write_text(json.dumps({
             "completed_updates": step, "rule": "final_update", "step": step,
             "withheld_beams": len(excluded.get("beam_indices", [])),

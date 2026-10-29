@@ -256,9 +256,9 @@ def train_window(
         print(f"  active training curvature: xy={use_xy_curv}, t={use_t_curv}")
         print(f"  training curvature samples/update: {args.num_collocation if use_xy_curv or use_t_curv else 0}")
         print(f"  derivative diagnostics saved every {args.summary_every} updates")
-        if experiment.all_beam or experiment.radar:
+        if experiment.all_beam or (experiment.radar and not experiment.radar_withholding):
             print("  all available beams/times train; zero withheld; analysis uses the final completed update")
-        elif experiment.withholding:
+        elif experiment.withholding or experiment.radar_withholding:
             held = experiment.data['withholding']
             print(f"  separate assessment: {len(experiment.data['roles']['train'])} training beams; "
                   f"{len(held['beam_indices'])} beams/{len(held['times_sec'])} times withheld; final completed update")

@@ -1,6 +1,6 @@
 Created: 2026-10-26
-Last edited: 2026-10-27
-Status: Optional development-experiment support; neural execution checks are operator-run
+Last edited: 2026-10-28
+Status: Explicit development, reconstruction and separate assessment routes; neural jobs are operator-run
 
 # Explicit development experiments through the shared trainer
 
@@ -69,3 +69,26 @@ terms are configured independently of the observation assessment design.
 Partition, final-save and analytic-function analysis checks are in
 `tests/test_withholding_experiment.py`; no neural model or optimizer is created
 by those tests. Actual training and prediction still require operator launch.
+
+## Native radar reconstruction and withheld-measurement assessment
+
+`shared-xyt-radar-reconstruction-1` uses the native HDF reader and every retained
+observation in its declared UTC window. Its completeness guard still rejects
+undeclared beam or time removal. Native irregular midpoint times, integration
+intervals and original invalid-density exclusions remain explicit.
+
+`shared-xyt-radar-withholding-1` first checks that complete native source, then
+validates an exact beam-only or time-record-only partition. Declare native beam
+indices or interior source record indices and their local seconds. Training
+uses the same radar dataset class and normalization kernel, refitted on retained
+rows before constructing the model. The source table and withheld values are
+integrity/assessment inputs; neither fits the final training scalers or selects
+weights, stopping or a checkpoint. Both routes use the existing shared trainer,
+reported-error loss options, native initializer and fixed final-update policy.
+
+Assessment recomputes distances, hulls and gaps from retained native observations;
+it does not assume a uniform cadence. It adds withheld residual tables, both
+standardized residual scales when configured, an assessment plot and exclusion
+markers. Withheld values are noisy exposure-averaged estimates, not plasma
+truth or an error estimate for the all-observation model. Analytic tests in
+`tests/test_radar_withholding.py` construct no neural model or optimizer.

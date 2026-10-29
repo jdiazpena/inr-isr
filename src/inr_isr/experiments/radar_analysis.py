@@ -46,12 +46,14 @@ def final_checkpoint(contract, run, device):
     contract.validate_checkpoint_loss(checkpoint)
     selection = json.loads((Path(run)/"selection.json").read_text())
     effective = json.loads((Path(run)/"run_config.json").read_text())
+    excluded = contract.data['withholding'] if contract.radar_withholding else {}
     if (checkpoint.get("experiment_contract_sha256") != digest(contract.path)
             or checkpoint.get("experiment_id") != contract.data["id"]
             or checkpoint.get("checkpoint_type") != "final_reconstruction_after_update"
             or selection.get("rule") != "final_update"
             or selection.get("score_based_selection") is not False
-            or selection.get("withheld_beams") != 0 or selection.get("withheld_times") != 0
+            or selection.get("withheld_beams") != len(excluded.get('beam_indices', []))
+            or selection.get("withheld_times") != len(excluded.get('times_sec', []))
             or checkpoint.get("step") != selection.get("completed_updates")
             or checkpoint.get("step") != effective.get("num_steps")
             or effective["num_steps"] not in (3,contract.data["training"]["num_steps"])):
@@ -95,7 +97,16 @@ def analyze_radar(contract, run, output, *, cpu=False):
     settings = contract.data["analysis"]
     origin = contract.data["observation_summary"]["unix_origin_sec"]
     obs = pd.read_csv(contract.file("train"),float_precision="round_trip")
+    held = (pd.read_csv(contract.file('withheld'), float_precision='round_trip')
+            if contract.radar_withholding else None)
     output = Path(output); output.mkdir(parents=True,exist_ok=False)
+
+    def query_support(table):
+        result = support(table, obs, origin)
+        if contract.radar_withholding:
+            from .radar_withholding import annotate_support
+            result = annotate_support(result, obs, held, contract.data['withholding'])
+        return result
 
     def prediction(table):
         window.assert_times(table.t_sec,"real reconstruction query")
@@ -117,7 +128,7 @@ def analyze_radar(contract, run, output, *, cpu=False):
     by_time = [{"time_index":int(i),"unix_mid":float(g.unix_mid.iloc[0]),
                 **error_metrics(g.residual_dex.to_numpy())} for i,g in obs.groupby("time_index")]
     pd.DataFrame(by_time).to_csv(output/"residuals_by_time.csv",index=False)
-    queries = support(pd.read_csv(contract.file("queries"),float_precision="round_trip"),obs,origin)
+    queries = query_support(pd.read_csv(contract.file("queries"),float_precision="round_trip"))
     queries["prediction_log10"] = prediction(queries)
     queries.to_csv(output/"field_queries_predictions.csv",index=False)
     q = queries.iloc[:settings["derivative_query_count"]].copy()
@@ -137,13 +148,17 @@ def analyze_radar(contract, run, output, *, cpu=False):
     limits = settings["log_density_limits"]
     geometry = obs[["beam_index","x_km","y_km"]].drop_duplicates()
     for index,t in enumerate(settings["map_times_sec"]):
-        frame = support(pd.DataFrame({"x_km":xx.ravel(),"y_km":yy.ravel(),"t_sec":t}),obs,origin)
+        frame = query_support(pd.DataFrame({"x_km":xx.ravel(),"y_km":yy.ravel(),"t_sec":t}))
         values = prediction(frame).reshape(xx.shape)
         inside = frame.inside_training_hull.to_numpy().reshape(xx.shape)
         fig,ax = plt.subplots(figsize=(7,6),layout="constrained")
         im = ax.pcolormesh(xx,yy,values,shading="auto",vmin=limits[0],vmax=limits[1])
         ax.contour(xx,yy,inside.astype(float),levels=[.5],colors="white",linewidths=.8)
         ax.scatter(geometry.x_km,geometry.y_km,s=15,c="white",edgecolors="black",linewidths=.6)
+        if contract.radar_withholding and contract.data['withholding']['kind'] == 'beams':
+            missing = held[['x_km', 'y_km']].drop_duplicates()
+            ax.scatter(missing.x_km, missing.y_km, marker='x', s=40, c='black', label='withheld beams')
+            ax.legend(fontsize=7)
         stamp = pd.to_datetime(t+origin,unit="s",utc=True).strftime("%H:%M:%S UTC")
         ax.set(xlabel="x east (km)",ylabel="y north (km)",aspect="equal",
                title=f"{contract.data['case']}: {stamp}\nWhite outline: beam hull; outside = spatial extrapolation")
@@ -154,7 +169,7 @@ def analyze_radar(contract, run, output, *, cpu=False):
     common = settings["comparison_unix_bounds"]
     times = np.linspace(common[0]-origin,common[1]-origin,settings["cut_time_samples"])
     x,t = np.meshgrid(np.linspace(xmin,xmax,settings["cut_x_samples"]),times)
-    cut = support(pd.DataFrame({"x_km":x.ravel(),"y_km":settings["cut_y_km"],"t_sec":t.ravel()}),obs,origin)
+    cut = query_support(pd.DataFrame({"x_km":x.ravel(),"y_km":settings["cut_y_km"],"t_sec":t.ravel()}))
     cut["prediction_log10"] = prediction(cut)
     cut.to_csv(output/"space_time_cut.csv",index=False)
     fig,ax = plt.subplots(figsize=(10,5),layout="constrained")
@@ -162,6 +177,11 @@ def analyze_radar(contract, run, output, *, cpu=False):
                        shading="auto",vmin=limits[0],vmax=limits[1])
     ax.set(xlabel="x east (km)",ylabel="minutes since common support start",
            title=f"Reconstruction at y={settings['cut_y_km']} km; no plasma truth available")
+    if contract.radar_withholding and contract.data['withholding']['kind'] == 'times':
+        for index, omitted in enumerate(contract.data['withholding']['times_sec']):
+            ax.axhline((omitted + origin - common[0]) / 60, color='black', linestyle='--', linewidth=.6,
+                       label='withheld native records' if index == 0 else None)
+        ax.legend(fontsize=7)
     fig.colorbar(im,ax=ax,label="log10 electron density (m⁻³)")
     fig.savefig(output/"space_time_cut.png",dpi=140);plt.close(fig)
     np.savez_compressed(output/"space_time_cut.npz",x_km=x,t_sec=t,unix_mid=t+origin,
@@ -202,6 +222,25 @@ def analyze_radar(contract, run, output, *, cpu=False):
             'linear_mean_square':float(np.mean(obs.standardized_linear_residual ** 2)),
             'relative_dNe_max':float((obs.dNe / obs.Ne).max()),
             'meaning':'Descriptive compatibility with reported errors; not validated chi-square, coverage or plasma truth.'}
+    if contract.radar_withholding:
+        from .radar_withholding import assessment_results
+        assessed, assessment = assessment_results(contract, prediction, output)
+        rule = contract.data['withholding']
+        summary.update(role='separate real-radar withheld-measurement assessment; final-update model',
+                       partition=contract.data['partition_summary'],
+                       withheld_beams=len(rule['beam_indices']), withheld_times=len(rule['times_sec']),
+                       withheld_assessment=assessment, assessment_only=True)
+        summary['limitations'].append(
+            'Withheld noisy exposure averages assess the reduced-input model, not the true field or all-beam model error.')
+        fig, axes = plt.subplots(1, 2, figsize=(11, 4), layout='constrained')
+        axes[0].scatter(assessed.log10_Ne, assessed.prediction_log10, s=9, alpha=.6)
+        axes[0].plot(limits, limits, color='black', linewidth=.7)
+        axes[0].set(xlabel='withheld observed log10 density', ylabel='predicted log10 density',
+                    title='Withheld estimates; not known plasma truth')
+        axes[1].plot((assessed.unix_mid-common[0])/60, assessed.residual_dex, '.', markersize=3)
+        axes[1].set(xlabel='minutes since common support start', ylabel='withheld residual (dex)')
+        fig.savefig(output/'withheld_measurements.png', dpi=140)
+        plt.close(fig)
     (output/"summary.json").write_text(json.dumps(summary,indent=2,allow_nan=False)+"\n")
     (output/"execution_device.json").write_text(json.dumps(device_record("cpu" if cpu else "cuda",device,model=model),indent=2)+"\n")
     print(f"Real analysis complete: {output}; final completed update {checkpoint['step']}")

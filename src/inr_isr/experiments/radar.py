@@ -69,6 +69,9 @@ def source_summary(path, training, dataset):
 
 def validate_radar_inputs(contract, dataset=None):
     """Reject missing rows, changed native selection, invented times or silent filters."""
+    if contract.radar_withholding:
+        from .radar_withholding import validate_assessment_inputs
+        return validate_assessment_inputs(contract, dataset=dataset)
     data = contract.data
     training = data["training"]
     if not contract.radar or data.get("selection_every") != 0:

@@ -24,7 +24,7 @@ class Contract:
     def load(cls, path):
         path = Path(path).resolve()
         data = json.loads(path.read_text())
-        if data.get("schema") not in ("shared-xyt-development-1", "shared-xyt-reconstruction-1", "shared-xyt-withholding-1", "shared-xyt-radar-reconstruction-1"):
+        if data.get("schema") not in ("shared-xyt-development-1", "shared-xyt-reconstruction-1", "shared-xyt-withholding-1", "shared-xyt-radar-reconstruction-1", "shared-xyt-radar-withholding-1"):
             raise ValueError("Unknown experiment contract")
         roles = [set(data["roles"][name]) for name in ("train", "development", "reserved")]
         if data["schema"] == "shared-xyt-development-1":
@@ -56,7 +56,11 @@ class Contract:
 
     @property
     def radar(self):
-        return self.data.get("schema") == "shared-xyt-radar-reconstruction-1"
+        return self.data.get("schema") in ("shared-xyt-radar-reconstruction-1", "shared-xyt-radar-withholding-1")
+
+    @property
+    def radar_withholding(self):
+        return self.data.get("schema") == "shared-xyt-radar-withholding-1"
 
     @property
     def final_update(self):
