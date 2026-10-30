@@ -396,6 +396,8 @@ def build_parser() -> argparse.ArgumentParser:
     # Regularization: fixed-lambda fallback
     parser.add_argument("--lambda_curv_xy", type=float, default=0.0)
     parser.add_argument("--lambda_curv_t", type=float, default=0.0)
+    parser.add_argument("--fixed_lambda_warmup", action="store_true",
+                        help="Fixed weights: zero through lambda_warmup_steps, full at reg_ramp_frac*num_steps.")
 
     # Regularization: reference-ratio lambda mode
     parser.add_argument(
@@ -455,6 +457,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--collocation_grid_nx", type=int, default=80)
     parser.add_argument("--collocation_grid_ny", type=int, default=80)
+    parser.add_argument("--collocation_region", choices=["nearest_beam", "beam_hull_buffer"], default="nearest_beam")
+    parser.add_argument("--collocation_buffer_km", type=float, default=None)
     parser.add_argument("--reg_ramp_frac", type=float, default=0.2)
 
     # Logging

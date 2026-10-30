@@ -9,6 +9,7 @@ import numpy as np
 from inr_isr.training.steps import validate_data_loss_definition, validate_lineardata_target_scaler
 from inr_isr.training.uncertainties import weighting_definition
 from inr_isr.training.data_tolerance import validate_data_loss_floor
+from inr_isr.training.collocation import collocation_definition
 
 
 def digest(path):
@@ -37,6 +38,9 @@ class Contract:
         contract.loss_definition()
         contract.weighting_definition()
         contract.spatial_curvature_definition()
+        training = data.get('training', {})
+        collocation_definition(training.get('collocation_region', 'nearest_beam'),
+                               training.get('collocation_buffer_km'))
         for name in data["inputs"]:
             contract.file(name)
         if contract.all_beam:
@@ -86,6 +90,20 @@ class Contract:
         """Check objective and final budget before analysis constructs any model."""
         expected = self.loss_definition()
         config = checkpoint.get("config", {})
+        training = self.data.get('training', {})
+        actual_sampling = collocation_definition(config.get('collocation_region', 'nearest_beam'),
+                                                  config.get('collocation_buffer_km'))
+        expected_sampling = collocation_definition(training.get('collocation_region', 'nearest_beam'),
+                                                    training.get('collocation_buffer_km'))
+        if actual_sampling != expected_sampling:
+            raise ValueError('Checkpoint collocation region differs from the contract')
+        if config.get('fixed_lambda_warmup', False) != training.get('fixed_lambda_warmup', False):
+            raise ValueError('Checkpoint fixed-lambda warmup differs from the contract')
+        if training.get('fixed_lambda_warmup', False):
+            for key in ('reference_loss_weights', 'lambda_curv_xy', 'lambda_curv_t',
+                        'lambda_warmup_steps', 'reg_ramp_frac'):
+                if config.get(key) != training.get(key):
+                    raise ValueError('Checkpoint fixed-lambda setting differs: ' + key)
         if validate_data_loss_floor(config.get('data_loss_floor',0.0)) != validate_data_loss_floor(
                 self.data.get('training',{}).get('data_loss_floor',0.0)):
             raise ValueError('Checkpoint data-loss tolerance differs from the contract')

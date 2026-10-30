@@ -155,18 +155,37 @@ def update_xyt_weights(args, *, step, use_xy_curv, use_t_curv, data_scalar_curre
         lambda_curv_xy_target = float(args.lambda_curv_xy)
         lambda_curv_t_target = float(args.lambda_curv_t)
 
+    ramp_step = step
+    ramp_num_steps = args.num_steps
+    ramp_frac = args.reg_ramp_frac
+    if not args.reference_loss_weights and getattr(args, 'fixed_lambda_warmup', False):
+        # Opt-in schedule: zero through warmup, then full at the original ramp
+        # endpoint. A three-update execution check remains wholly in warmup.
+        warmup = args.lambda_warmup_steps
+        ramp_end = max(1, int(ramp_frac * args.num_steps)) if ramp_frac > 0 else warmup
+        if step <= warmup:
+            ramp_step = 0
+            ramp_frac = 1.0
+            ramp_num_steps = 1
+        else:
+            if ramp_frac > 0 and ramp_end <= warmup:
+                raise ValueError('Fixed-lambda ramp must end after warmup')
+            ramp_step = step - warmup
+            ramp_num_steps = max(1, ramp_end - warmup)
+            ramp_frac = 1.0 if ramp_frac > 0 else 0.0
+
     lambda_curv_xy_eff = ramp_weight(
         target_weight=lambda_curv_xy_base,
-        step=step,
-        num_steps=args.num_steps,
-        ramp_frac=args.reg_ramp_frac,
+        step=ramp_step,
+        num_steps=ramp_num_steps,
+        ramp_frac=ramp_frac,
     )
 
     lambda_curv_t_eff = ramp_weight(
         target_weight=lambda_curv_t_base,
-        step=step,
-        num_steps=args.num_steps,
-        ramp_frac=args.reg_ramp_frac,
+        step=ramp_step,
+        num_steps=ramp_num_steps,
+        ramp_frac=ramp_frac,
     )
 
     return {

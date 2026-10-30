@@ -23,6 +23,7 @@ from models import MLPINR
 from inr_isr.device import resolve_device, device_record
 from inr_isr.training.controllers import update_xyt_weights
 from inr_isr.training.data_tolerance import apply_data_loss_floor, validate_data_loss_floor
+from inr_isr.training.collocation import collocation_definition, make_buffered_collocation_pool
 from inr_isr.training.curvature_linear import spatial_curvature_definition, curvature_losses_xy_t_linear
 from inr_isr.training.steps import (
     data_objective, data_objective_lineardata, validate_data_loss_definition,
@@ -77,6 +78,8 @@ def train_window(
         getattr(args, 'data_loss_domain', 'log'),
         getattr(args, 'linear_density_reference', None))
     data_loss_floor = validate_data_loss_floor(getattr(args, 'data_loss_floor', 0.0))
+    sampling_definition = collocation_definition(getattr(args, 'collocation_region', 'nearest_beam'),
+                                                getattr(args, 'collocation_buffer_km', None))
     data_weighting_definition = weighting_definition(getattr(args, 'data_weighting', 'equal'))
     reported_weighting = data_weighting_definition['data_weighting'] == 'reported_dNe'
     spatial_definition = spatial_curvature_definition(
@@ -105,6 +108,12 @@ def train_window(
             'data_loss_floor' not in experiment.data.get('training', {})):
         # Legacy contracts did not record a disabled tolerance selector.
         config.pop('data_loss_floor', None)
+    # Do not add default-off selectors to historical contracts' config schemas.
+    for key, default in (('fixed_lambda_warmup', False), ('collocation_region', 'nearest_beam'),
+                         ('collocation_buffer_km', None)):
+        if (config.get(key, default) == default and experiment is not None
+                and key not in experiment.data.get('training', {})):
+            config.pop(key, None)
     config.update(data_loss_definition)
     config['data_loss_definition'] = data_loss_definition.copy()
     if hasattr(args, 'data_weighting'):
@@ -216,13 +225,18 @@ def train_window(
     )
 
     if needs_collocation_pool:
-        collocation_pool, collocation_radius_km, collocation_valid_fraction, collocation_n_times = make_collocation_pool(
+        pool_factory = make_collocation_pool
+        pool_options = {'nearest_radius_factor': args.nearest_radius_factor}
+        if sampling_definition['collocation_region'] == 'beam_hull_buffer':
+            pool_factory = make_buffered_collocation_pool
+            pool_options = {'buffer_km': sampling_definition['collocation_buffer_km']}
+        collocation_pool, collocation_radius_km, collocation_valid_fraction, collocation_n_times = pool_factory(
             dataset=dataset,
             df=df,
             grid_nx=args.collocation_grid_nx,
             grid_ny=args.collocation_grid_ny,
             padding_frac=args.grid_padding_frac,
-            nearest_radius_factor=args.nearest_radius_factor,
+            **pool_options,
         )
 
         collocation_pool = collocation_pool.to(device)
@@ -241,7 +255,8 @@ def train_window(
         print(f"  sample per step:       {args.num_collocation}")
         print(f"  diagnostic probe size: {diagnostic_collocation_points.shape[0]}")
         print(f"  time records used:     {collocation_n_times}")
-        print(f"  nearest radius [km]:   {collocation_radius_km:.3f}")
+        radius_label = 'hull buffer' if sampling_definition['collocation_region'] == 'beam_hull_buffer' else 'nearest radius'
+        print(f"  {radius_label} [km]:   {collocation_radius_km:.3f}")
         print(f"  valid grid fraction:   {collocation_valid_fraction:.3f}")
         print(f"  curvature loss xy:     {use_xy_curv}")
         print(f"  curvature loss t:      {use_t_curv}")
@@ -273,7 +288,7 @@ def train_window(
         print(f"  training curvature samples/update: {args.num_collocation if use_xy_curv or use_t_curv else 0}")
         print(f"  derivative diagnostics saved every {args.summary_every} updates")
         if experiment.all_beam or (experiment.radar and not experiment.radar_withholding):
-            print("  all available beams/times train; zero withheld; analysis uses the final completed update")
+            print("  all available beams/times train; zero withheld; best-total, best-data and final states saved")
         elif experiment.withholding or experiment.radar_withholding:
             held = experiment.data['withholding']
             print(f"  separate assessment: {len(experiment.data['roles']['train'])} training beams; "
