@@ -369,6 +369,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hidden_omega_0", type=float, default=5.0)
 
     # Training
+    parser.add_argument("--data_loss_floor", type=float, default=0.0,
+                        help="Optional objective floor: data gradient off at/below tolerance, reactivated above; zero disables.")
     parser.add_argument(
         "--data_loss_domain", choices=["log", "linear"], default="log",
         help="Data residual domain: existing normalized-log MSE, or explicit linear-density comparison.",

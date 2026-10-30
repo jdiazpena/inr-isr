@@ -18,6 +18,14 @@ benchmark operations. The inspected repository
 `/home/jdiaz/codex/postdocanid/inr-isr` was used only as a component-level historical
 reference; its standalone trainer architecture was not copied.
 
+The shared synthetic/real x-y-time trainer also accepts `--data_loss_floor`
+(default `0`, disabled). With a positive tolerance, it computes the raw data loss
+every update and uses `max(raw_data_loss, tolerance)` in the objective and the
+existing lambda-controller EMA. The data gradient is zero at/below tolerance and
+reactivates above it. Histories/checkpoints retain `data_loss_raw`, the floored
+`data_loss` contribution and `data_gradient_active`; the separate best-data model
+still minimizes the raw loss. This option is not yet wired into the 4D trainer.
+
 The implemented curvature terms are derivative/smoothness priors. This repository
 does **not** implement plasma-transport equations, precipitation models,
 auroral-camera assimilation, or the complete physics-informed FONDECYT proposal.

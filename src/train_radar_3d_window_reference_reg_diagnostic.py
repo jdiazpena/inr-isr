@@ -358,6 +358,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--target_col", choices=["log10_Ne"], default="log10_Ne",
                         help="Native radar target; the model output remains normalized log10 density.")
     parser.add_argument("--data_loss_domain", choices=["log", "linear"], default="log")
+    parser.add_argument("--data_loss_floor", type=float, default=0.0,
+                        help="Optional objective floor: data gradient off at/below tolerance, reactivated above; zero disables.")
     parser.add_argument("--linear_density_reference", type=float, default=None,
                         help="Required positive density reference in m^-3 for explicit linear loss.")
     parser.add_argument("--data_weighting", choices=["equal", "reported_dNe"], default="equal",

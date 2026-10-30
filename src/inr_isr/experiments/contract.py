@@ -8,6 +8,7 @@ import numpy as np
 
 from inr_isr.training.steps import validate_data_loss_definition, validate_lineardata_target_scaler
 from inr_isr.training.uncertainties import weighting_definition
+from inr_isr.training.data_tolerance import validate_data_loss_floor
 
 
 def digest(path):
@@ -70,6 +71,7 @@ class Contract:
     def loss_definition(self):
         """Resolve old omitted selectors as log; reject ambiguous new objectives."""
         training = self.data.get("training", {})
+        validate_data_loss_floor(training.get('data_loss_floor', 0.0))
         definition = validate_data_loss_definition(
             training.get("data_loss_domain", "log"),
             training.get("linear_density_reference"))
@@ -84,6 +86,9 @@ class Contract:
         """Check objective and final budget before analysis constructs any model."""
         expected = self.loss_definition()
         config = checkpoint.get("config", {})
+        if validate_data_loss_floor(config.get('data_loss_floor',0.0)) != validate_data_loss_floor(
+                self.data.get('training',{}).get('data_loss_floor',0.0)):
+            raise ValueError('Checkpoint data-loss tolerance differs from the contract')
         from inr_isr.training.curvature_linear import spatial_curvature_definition
         curvature = spatial_curvature_definition(
             config.get('spatial_curvature_domain', 'log'),

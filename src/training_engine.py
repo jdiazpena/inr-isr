@@ -22,6 +22,7 @@ from tqdm import tqdm
 from models import MLPINR
 from inr_isr.device import resolve_device, device_record
 from inr_isr.training.controllers import update_xyt_weights
+from inr_isr.training.data_tolerance import apply_data_loss_floor, validate_data_loss_floor
 from inr_isr.training.curvature_linear import spatial_curvature_definition, curvature_losses_xy_t_linear
 from inr_isr.training.steps import (
     data_objective, data_objective_lineardata, validate_data_loss_definition,
@@ -75,6 +76,7 @@ def train_window(
     data_loss_definition = validate_data_loss_definition(
         getattr(args, 'data_loss_domain', 'log'),
         getattr(args, 'linear_density_reference', None))
+    data_loss_floor = validate_data_loss_floor(getattr(args, 'data_loss_floor', 0.0))
     data_weighting_definition = weighting_definition(getattr(args, 'data_weighting', 'equal'))
     reported_weighting = data_weighting_definition['data_weighting'] == 'reported_dNe'
     spatial_definition = spatial_curvature_definition(
@@ -99,6 +101,10 @@ def train_window(
 
     # Save the effective flat CLI/config values needed to reproduce this exact run.
     config = vars(args).copy()
+    if data_loss_floor == 0.0 and (experiment is None or
+            'data_loss_floor' not in experiment.data.get('training', {})):
+        # Legacy contracts did not record a disabled tolerance selector.
+        config.pop('data_loss_floor', None)
     config.update(data_loss_definition)
     config['data_loss_definition'] = data_loss_definition.copy()
     if hasattr(args, 'data_weighting'):
@@ -374,6 +380,9 @@ def train_window(
         "p99_abs_log10",
     ]
 
+    if data_loss_floor > 0:
+        history_fields += ['data_loss_raw', 'data_loss_floor', 'data_gradient_active']
+    latest_density_rmse_percent = float('nan')
     latest_metrics = {
         "rmse": np.nan,
         "mae": np.nan,
@@ -509,6 +518,16 @@ def train_window(
         else:
             pred, data_loss = data_objective(model, batch_coords, batch_values, recipe="xyt")
 
+        data_loss_raw = data_loss
+        data_loss = apply_data_loss_floor(data_loss_raw, data_loss_floor)
+        # Feed the contribution actually used by the objective to the existing EMA.
+        # This also prevents its data reference from collapsing below the tolerance.
+        data_floor_fields = ({
+            'data_loss_raw': float(data_loss_raw.detach().item()),
+            'data_loss_floor': data_loss_floor,
+            'data_gradient_active': bool((data_loss_raw.detach() > data_loss_floor).item()),
+        } if data_loss_floor > 0 else {})
+
         if use_xy_curv or use_t_curv:
             coords_col = sample_collocation_points(
                 collocation_pool=collocation_pool,
@@ -611,6 +630,7 @@ def train_window(
                         "losses": {
                             "total_loss": total_scalar,
                             "data_loss": data_scalar,
+                            **data_floor_fields,
                             "curv_xy_raw": float(curv_xy_raw.detach().item()),
                             "curv_xy_weighted": float(curv_xy_weighted.detach().item()),
                             "lambda_curv_xy_eff": float(lambda_curv_xy_eff),
@@ -632,8 +652,9 @@ def train_window(
                     best_total_path,
                 )
 
-            if data_scalar < best_data_after_ramp:
-                best_data_after_ramp = data_scalar
+            raw_data_scalar = float(data_loss_raw.detach().item())
+            if raw_data_scalar < best_data_after_ramp:
+                best_data_after_ramp = raw_data_scalar
                 best_data_step = step
 
                 torch.save(
@@ -647,6 +668,7 @@ def train_window(
                         "losses": {
                             "total_loss": total_scalar,
                             "data_loss": data_scalar,
+                            **data_floor_fields,
                             "curv_xy_raw": float(curv_xy_raw.detach().item()),
                             "curv_xy_weighted": float(curv_xy_weighted.detach().item()),
                             "lambda_curv_xy_eff": float(lambda_curv_xy_eff),
@@ -740,6 +762,9 @@ def train_window(
             )
 
             latest_metrics = metrics
+            density_residual_percent = 100.0 * np.expm1(np.log(10.0) * (
+                pred_df['pred_log10_Ne'].to_numpy() - pred_df['log10_Ne'].to_numpy()))
+            latest_density_rmse_percent = float(np.sqrt(np.mean(density_residual_percent ** 2)))
 
             if diagnostic_collocation_points is not None:
                 latest_derivative_diag = derivative_diagnostics_xy_t(
@@ -821,6 +846,7 @@ def train_window(
                 "p99_abs_log10": metrics["p99_abs"],
             }
 
+            row.update(data_floor_fields)
             append_csv_row(history_path, history_fields, row)
 
         if step == 1 or step % args.log_every == 0 or step == args.num_steps:
@@ -834,11 +860,14 @@ def train_window(
                 f"tRef={t_over_data_ref:.2f} "
                 f"lxy={lambda_curv_xy_eff:.1e} "
                 f"lt={lambda_curv_t_eff:.1e} "
-                f"rmse={latest_metrics['rmse']:.2e}"
+                f"fitRMS%={latest_density_rmse_percent:.2e}"
             )
+            if data_loss_floor > 0:
+                native_postfix += (f" rawData={data_loss_raw.item():.2e} "
+                                   f"dataGrad={'ON' if data_floor_fields['data_gradient_active'] else 'OFF'}")
             if development_monitor is not None and not experiment.final_update:
                 dev = "--" if development_monitor.latest is None else f"{development_monitor.latest:.3e}"
-                pbar.set_postfix_str(f"data={data_loss.item():.2e} train={latest_metrics['rmse']:.3e} "
+                pbar.set_postfix_str(f"data={data_loss.item():.2e} fitRMS%={latest_density_rmse_percent:.3e} "
                                      f"dev={dev} best@{development_monitor.best_step}")
             else:
                 pbar.set_postfix_str(native_postfix)
@@ -887,8 +916,11 @@ def train_window(
         )
 
     print()
-    print("Final measured-point metrics in log10(Ne):")
-    for key, value in final_metrics.items():
+    final_density_percent = 100.0 * np.expm1(np.log(10.0) * (
+        pred_df['pred_log10_Ne'].to_numpy() - pred_df['log10_Ne'].to_numpy()))
+    percent_metrics = compute_metrics(pred=final_density_percent, target=np.zeros_like(final_density_percent))
+    print("Final measured-point density residuals (% of each observation):")
+    for key, value in percent_metrics.items():
         print(f"  {key:12s}: {value:.8e}")
 
     # ------------------------------------------------------------
