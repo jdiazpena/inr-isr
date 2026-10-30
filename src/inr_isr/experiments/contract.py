@@ -35,6 +35,7 @@ class Contract:
         contract = cls(path, data)
         contract.loss_definition()
         contract.weighting_definition()
+        contract.spatial_curvature_definition()
         for name in data["inputs"]:
             contract.file(name)
         if contract.all_beam:
@@ -83,6 +84,12 @@ class Contract:
         """Check objective and final budget before analysis constructs any model."""
         expected = self.loss_definition()
         config = checkpoint.get("config", {})
+        from inr_isr.training.curvature_linear import spatial_curvature_definition
+        curvature = spatial_curvature_definition(
+            config.get('spatial_curvature_domain', 'log'),
+            config.get('linear_curvature_density_reference'))
+        if curvature != self.spatial_curvature_definition():
+            raise ValueError('Checkpoint spatial-curvature definition differs from the contract')
         actual = validate_data_loss_definition(
             config.get("data_loss_domain", "log"), config.get("linear_density_reference"))
         if actual != expected:
@@ -109,6 +116,19 @@ class Contract:
                     or (requested is not None and actual not in (3, requested))):
                 raise ValueError("Final checkpoint update differs from the requested training budget")
         return expected
+
+    def spatial_curvature_definition(self):
+        from inr_isr.training.curvature_linear import spatial_curvature_definition
+        t = self.data.get('training', {})
+        definition = spatial_curvature_definition(
+            t.get('spatial_curvature_domain', 'log'), t.get('linear_curvature_density_reference'))
+        if definition['spatial_curvature_domain'] == 'linear':
+            if t.get('target_col') != 'log10_Ne' or not t.get('normalize_values', True):
+                raise ValueError('Linear spatial curvature requires normalized log10_Ne output')
+            temporal = t.get('target_t_ratio', 0) if t.get('reference_loss_weights') else t.get('lambda_curv_t', 0)
+            if temporal:
+                raise ValueError('Linear spatial-curvature comparison requires temporal training off')
+        return definition
 
     def weighting_definition(self):
         definition = weighting_definition(self.data.get('training', {}).get('data_weighting', 'equal'))

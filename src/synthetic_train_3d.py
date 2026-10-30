@@ -335,6 +335,8 @@ def train(args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
+    from inr_isr.training.curvature_linear import add_spatial_curvature_arguments
+    add_spatial_curvature_arguments(parser)
 
     # Data
     parser.add_argument(

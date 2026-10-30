@@ -22,6 +22,7 @@ from tqdm import tqdm
 from models import MLPINR
 from inr_isr.device import resolve_device, device_record
 from inr_isr.training.controllers import update_xyt_weights
+from inr_isr.training.curvature_linear import spatial_curvature_definition, curvature_losses_xy_t_linear
 from inr_isr.training.steps import (
     data_objective, data_objective_lineardata, validate_data_loss_definition,
     validate_lineardata_target_scaler, compose_xyt_loss, parameter_update,
@@ -76,6 +77,10 @@ def train_window(
         getattr(args, 'linear_density_reference', None))
     data_weighting_definition = weighting_definition(getattr(args, 'data_weighting', 'equal'))
     reported_weighting = data_weighting_definition['data_weighting'] == 'reported_dNe'
+    spatial_definition = spatial_curvature_definition(
+        getattr(args, 'spatial_curvature_domain', 'log'),
+        getattr(args, 'linear_curvature_density_reference', None))
+    linear_spatial = spatial_definition['spatial_curvature_domain'] == 'linear'
 
     # This call must remain before collocation sampling and model construction. Their
     # random-number order is part of reproducible training behavior.
@@ -111,6 +116,11 @@ def train_window(
     # 1. Load one time window
     # ------------------------------------------------------------
     dataset = dataset_factory(args)
+
+    if linear_spatial:
+        validate_lineardata_target_scaler(
+            dataset.target_scaler, normalize_values=getattr(dataset, 'normalize_values', False))
+        print(f"  spatial curvature: linear Ne / {spatial_definition['linear_curvature_density_reference']:g}; temporal training must be off")
 
     if data_loss_definition['data_loss_domain'] == 'linear':
         validate_lineardata_target_scaler(
@@ -505,12 +515,15 @@ def train_window(
                 num_collocation=args.num_collocation,
             )
 
-            curv_xy_raw, curv_t_raw = curvature_losses_xy_t(
-                model=model,
-                coords_col=coords_col,
-                use_xy=use_xy_curv,
-                use_t=use_t_curv,
-            )
+            if linear_spatial:
+                curv_xy_raw, curv_t_raw = curvature_losses_xy_t_linear(
+                    model, coords_col, use_xy_curv, use_t_curv,
+                    target_scaler=dataset.target_scaler,
+                    density_reference=spatial_definition['linear_curvature_density_reference'])
+            else:
+                curv_xy_raw, curv_t_raw = curvature_losses_xy_t(
+                    model=model, coords_col=coords_col,
+                    use_xy=use_xy_curv, use_t=use_t_curv)
         else:
             curv_xy_raw = data_loss.new_tensor(0.0)
             curv_t_raw = data_loss.new_tensor(0.0)
